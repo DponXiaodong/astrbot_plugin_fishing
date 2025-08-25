@@ -164,7 +164,41 @@ class FishingPlugin(Star):
                                """)
 
     # ===========基础与核心玩法==========
+    async def _send_long_message(self, event, message: str, title: str):
+        """处理长消息的通用方法，复用鱼类图鉴的逻辑"""
+        if len(message) <= 500:
+            yield event.plain_result(message)
+            return
 
+        text_chunk_size = 1000  # 每个Plain文本块的最大字数
+        node_chunk_size = 4  # 每个Node中最多包含的Plain文本块数量
+        text_chunks = [message[i:i + text_chunk_size] for i in
+                    range(0, len(message), text_chunk_size)]
+
+        if not text_chunks:
+            yield event.plain_result("❌ 内容为空，无法发送。")
+            return
+
+        grouped_chunks = [text_chunks[i:i + node_chunk_size] for i in
+                        range(0, len(text_chunks), node_chunk_size)]
+
+        from astrbot.api.message_components import Node, Plain
+        nodes_to_send = []
+        for i, group in enumerate(grouped_chunks):
+            plain_components = [Plain(text=chunk) for chunk in group]
+
+            node = Node(
+                uin=event.get_self_id(),
+                name=f"{title} - 第 {i + 1} 页",
+                content=plain_components
+            )
+            nodes_to_send.append(node)
+
+        try:
+            yield event.chain_result(nodes_to_send)
+        except Exception as e:
+            yield event.plain_result(f"❌ 发送转发消息失败：{e}")
+        
     @filter.command("注册")
     async def register_user(self, event: AstrMessageEvent):
         """注册用户命令"""
@@ -294,6 +328,7 @@ class FishingPlugin(Star):
                 yield event.plain_result("❌ 获取用户状态数据失败。")
         else:
             yield event.plain_result("❌ 您还没有注册，请先使用 /注册 命令注册。")
+            
     @filter.command("鱼塘")
     async def pond(self, event: AstrMessageEvent):
         """查看用户鱼塘内的鱼"""
@@ -356,7 +391,10 @@ class FishingPlugin(Star):
                 if rod.get("bonus_rare_fish_chance", 1) != 1 and rod.get("bonus_fish_weight", 1.0) != 1.0:
                     message += f"   - 钓上鱼鱼类几率加成: {to_percentage(rod['bonus_rare_fish_chance'])}\n"
                 message += f"   -精炼等级: {rod.get('refine_level', 1)}\n"
-            yield event.plain_result(message)
+            
+            # 使用通用的长消息处理方法
+            async for result in self._send_long_message(event, message, "鱼竿信息"):
+                yield result
         else:
             yield event.plain_result("🎣 您还没有鱼竿，快去商店购买或抽奖获得吧！")
 
@@ -416,7 +454,10 @@ class FishingPlugin(Star):
             for accessory in accessories_info["accessories"]:
                 message += format_accessory_or_rod(accessory)
                 message += f"   -精炼等级: {accessory.get('refine_level', 1)}\n"
-            yield event.plain_result(message)
+            
+            # 使用通用的长消息处理方法
+            async for result in self._send_long_message(event, message, "饰品信息"):
+                yield result
         else:
             yield event.plain_result("💍 您还没有饰品，快去商店购买或抽奖获得吧！")
 
