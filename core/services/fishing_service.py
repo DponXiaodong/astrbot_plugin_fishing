@@ -509,7 +509,7 @@ class FishingService:
     def _auto_fishing_loop(self):
         """自动钓鱼循环任务，由后台线程执行。"""
         fishing_config = self.config.get("fishing", {})
-        cooldown = fishing_config.get("cooldown_seconds", 180)
+        cooldown = fishing_config.get("cooldown_seconds", 10)
         cost = fishing_config.get("cost", 10)
 
         while self.auto_fishing_running:

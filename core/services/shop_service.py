@@ -70,16 +70,22 @@ class ShopService:
 
         # 1. 获取物品信息并计算总价
         if item_type == "rod":
-            if quantity > 1:
-                return {"success": False, "message": "鱼竿一次只能购买一个"}
+            # 添加鱼竿购买数量限制
+            if quantity > 5:
+                return {"success": False, "message": "鱼竿单次购买数量不能超过5个"}
+                
             item_template = self.item_template_repo.get_rod_by_id(item_template_id)
             if item_template and item_template.source == "shop" and item_template.purchase_cost:
-                total_cost = item_template.purchase_cost
+                total_cost = item_template.purchase_cost * quantity
                 item_name = item_template.name
             else:
                 return {"success": False, "message": "此鱼竿无法购买"}
 
         elif item_type == "bait":
+            # 为鱼饵也添加一个合理的上限
+            if quantity > 1000:
+                return {"success": False, "message": "鱼饵单次购买数量不能超过1000个"}
+                
             item_template = self.item_template_repo.get_bait_by_id(item_template_id)
             if item_template and item_template.cost:
                 total_cost = item_template.cost * quantity
@@ -99,11 +105,13 @@ class ShopService:
         self.user_repo.update(user)
 
         if item_type == "rod" and item_template:
-            self.inventory_repo.add_rod_instance(
-                user_id=user_id,
-                rod_id=item_template.rod_id,
-                durability=item_template.durability
-            )
+            # 批量添加鱼竿实例
+            for _ in range(quantity):
+                self.inventory_repo.add_rod_instance(
+                    user_id=user_id,
+                    rod_id=item_template.rod_id,
+                    durability=item_template.durability
+                )
         elif item_type == "bait":
             self.inventory_repo.update_bait_quantity(
                 user_id=user_id,

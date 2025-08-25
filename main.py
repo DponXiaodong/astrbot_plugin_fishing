@@ -669,20 +669,26 @@ class FishingPlugin(Star):
         user_id = event.get_sender_id()
         args = event.message_str.split(" ")
         if len(args) < 2:
-            yield event.plain_result("❌ 请指定要购买的鱼竿 ID，例如：/购买鱼竿 12")
+            yield event.plain_result("⚠ 请指定要购买的鱼竿 ID，例如：/购买鱼竿 12")
             return
         rod_instance_id = args[1]
         if not rod_instance_id.isdigit():
-            yield event.plain_result("❌ 鱼竿 ID 必须是数字，请检查后重试。")
+            yield event.plain_result("⚠ 鱼竿 ID 必须是数字，请检查后重试。")
             return
-        result = self.shop_service.buy_item(user_id, "rod", int(rod_instance_id))
+        quantity = 1  # 默认购买数量为1
+        if len(args) == 3:
+            quantity = args[2]
+            if not quantity.isdigit() or int(quantity) <= 0:
+                yield event.plain_result("⚠ 购买数量必须是正整数，请检查后重试。")
+                return
+        result = self.shop_service.buy_item(user_id, "rod", int(rod_instance_id), int(quantity))
         if result:
             if result["success"]:
                 yield event.plain_result(result["message"])
             else:
-                yield event.plain_result(f"❌ 购买鱼竿失败：{result['message']}")
+                yield event.plain_result(f"⚠ 购买鱼竿失败：{result['message']}")
         else:
-            yield event.plain_result("❌ 出错啦！请稍后再试。")
+            yield event.plain_result("⚠ 出错啦！请稍后再试。")
 
     @filter.command("购买鱼饵")
     async def buy_bait(self, event: AstrMessageEvent):

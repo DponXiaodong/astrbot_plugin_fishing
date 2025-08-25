@@ -94,7 +94,7 @@ class GachaService:
                 "item_name": item_name,
                 "item_rarity": item_rarity if item.item_type != "titles" else 0,
                 "weight": item.weight,
-                "probability": 1.0 + round(probability, 4)
+                "probability": 1.0 + round(probability, 6)
             })
         return {"success": True, "pool": pool, "probabilities": probabilities}
 
