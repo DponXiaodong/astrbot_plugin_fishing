@@ -34,7 +34,7 @@ class GameMechanicsService:
 
     def perform_wipe_bomb(self, user_id: str, contribution_amount: int) -> Dict[str, Any]:
         """
-        处理“擦弹”的完整逻辑。
+        处理"擦弹"的完整逻辑。
         """
         user = self.user_repo.get_by_id(user_id)
         if not user:
@@ -66,14 +66,26 @@ class GameMechanicsService:
                 reward_multiplier = round(random.uniform(r_min, r_max), 1)
                 break
 
-        # 4. 计算最终金额并执行事务
+        # 4. 计算最终金额
         reward_amount = int(contribution_amount * reward_multiplier)
         profit = reward_amount - contribution_amount
 
+        # 5. 阳光普照检查
+        sunshine_triggered = False
+        sunshine_amount = 0
+        loss_amount = abs(profit) if profit < 0 else 0
+        
+        # 触发条件：倍率<=0.1 或 损失金额>1000万
+        if reward_multiplier <= 0.1 or loss_amount > 10000000:
+            sunshine_triggered = True
+            sunshine_amount = int(contribution_amount * 0.1)  # 返还10%
+            profit += sunshine_amount  # 减少损失
+
+        # 6. 执行事务
         user.coins += profit
         self.user_repo.update(user)
 
-        # 5. 记录日志
+        # 7. 记录日志
         log_entry = WipeBombLog(
             log_id=0, # DB自增
             user_id=user_id,
@@ -84,8 +96,7 @@ class GameMechanicsService:
         )
         self.log_repo.add_wipe_bomb_log(log_entry)
 
-        # 上传非敏感数据到服务器
-        # 在单独线程中异步上传数据
+        # 上传非敏感数据到服务器（保持原有逻辑）
         def upload_data_async():
             upload_data = {
                 "user_id": user_id,
@@ -93,7 +104,9 @@ class GameMechanicsService:
                 "reward_multiplier": reward_multiplier,
                 "reward_amount": reward_amount,
                 "profit": profit,
-                "timestamp": log_entry.timestamp.isoformat()
+                "timestamp": log_entry.timestamp.isoformat(),
+                "sunshine_triggered": sunshine_triggered,
+                "sunshine_amount": sunshine_amount
             }
             api_url = "http://veyu.me/api/record"
             try:
@@ -103,9 +116,7 @@ class GameMechanicsService:
             except Exception as e:
                 logger.error(f"上传数据时发生错误: {e}")
 
-        # 启动异步线程进行数据上传，不阻塞主流程
         self.thread_pool.submit(upload_data_async)
-
 
         return {
             "success": True,
@@ -113,7 +124,9 @@ class GameMechanicsService:
             "multiplier": reward_multiplier,
             "reward": reward_amount,
             "profit": profit,
-            "remaining_today": max_attempts - (attempts_today + 1)
+            "remaining_today": max_attempts - (attempts_today + 1),
+            "sunshine_triggered": sunshine_triggered,
+            "sunshine_amount": sunshine_amount
         }
 
     def get_wipe_bomb_history(self, user_id: str, limit: int = 10) -> Dict[str, Any]:

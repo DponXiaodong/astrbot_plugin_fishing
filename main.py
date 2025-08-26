@@ -1078,12 +1078,20 @@ class FishingPlugin(Star):
                 reward = result["reward"]
                 profit = result["profit"]
                 remaining_today = result["remaining_today"]
+                sunshine_triggered = result.get("sunshine_triggered", False)
+                sunshine_amount = result.get("sunshine_amount", 0)
+                
                 if multiplier >= 3:
                     message += f"🎰 大成功！你投入 {contribution} 金币，获得了 {multiplier} 倍奖励！\n 💰 奖励金额：{reward} 金币（盈利：+ {profit}）\n"
                 elif multiplier >= 1:
                     message += f"🎲 你投入 {contribution} 金币，获得了 {multiplier} 倍奖励！\n 💰 奖励金额：{reward} 金币（盈利：+ {profit}）\n"
                 else:
-                    message += f"💥 你投入 {contribution} 金币，获得了 {multiplier} 倍奖励！\n 💰 奖励金额：{reward} 金币（亏损：- {abs(profit)})\n"
+                    message += f"💥 你投入 {contribution} 金币，获得了 {multiplier} 倍奖励！\n 💰 奖励金额：{reward} 金币（亏损：- {abs(profit - sunshine_amount)})\n"
+                
+                # 阳光普照提示
+                if sunshine_triggered:
+                    message += f"☀️ 阳光普照！系统返还了 {sunshine_amount} 金币作为安慰奖！\n"
+                    
                 message += f"剩余擦弹次数：{remaining_today} 次\n"
                 yield event.plain_result(message)
             else:
