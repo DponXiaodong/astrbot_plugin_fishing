@@ -199,11 +199,8 @@ class FishingService:
         rarity_distribution = current_weights.copy()
         # 应用稀有度加成
         if rare_chance > 0.0:
-            # 方案1: 只对4星和5星进行加成
-            high_rarity_indices = [3, 4]  # 4星和5星的索引
-            for idx in high_rarity_indices:
-                if idx < len(rarity_distribution):
-                    rarity_distribution[idx] += rare_chance
+            # 直接将稀有率加成加到5星鱼的概率上（索引4是5星）
+            rarity_distribution[4] += rare_chance
             
             # 归一化概率分布
             total = sum(rarity_distribution)
