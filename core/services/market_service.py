@@ -146,6 +146,9 @@ class MarketService:
         if not listing:
             return {"success": False, "message": "该商品不存在或已被购买"}
 
+        # 🔥 新增：禁止用户购买自己上架的商品
+        if buyer_id == listing.user_id:
+            return {"success": False, "message": "❌ 不能购买自己上架的商品，请使用下架功能"}
 
         seller = self.user_repo.get_by_id(listing.user_id)
         if not seller:
@@ -183,3 +186,47 @@ class MarketService:
         self.market_repo.remove_listing(market_id)
 
         return {"success": True, "message": f"✅ 购买成功，花费 {listing.price} 金币！"}
+
+    def remove_item_from_market(self, user_id: str, market_id: int) -> Dict[str, Any]:
+        """
+        🆕 新功能：处理用户下架自己商品的逻辑
+        """
+        user = self.user_repo.get_by_id(user_id)
+        if not user:
+            return {"success": False, "message": "用户不存在"}
+
+        listing = self.market_repo.get_listing_by_id(market_id)
+        if not listing:
+            return {"success": False, "message": "该商品不存在或已被购买"}
+
+        # 检查是否是该用户的商品
+        if user_id != listing.user_id:
+            return {"success": False, "message": "❌ 只能下架自己上架的商品"}
+
+        # 将物品返回给用户库存
+        if listing.item_type == "rod":
+            rod_template = self.item_template_repo.get_rod_by_id(listing.item_id)
+            self.inventory_repo.add_rod_instance(
+                user_id=user_id,
+                rod_id=listing.item_id,
+                durability=rod_template.durability if rod_template else None,
+                refine_level=listing.refine_level
+            )
+            item_name = f"鱼竿【{listing.item_name}】"
+        elif listing.item_type == "accessory":
+            self.inventory_repo.add_accessory_instance(
+                user_id=user_id,
+                accessory_id=listing.item_id,
+                refine_level=listing.refine_level
+            )
+            item_name = f"饰品【{listing.item_name}】"
+        else:
+            return {"success": False, "message": "不支持的物品类型"}
+
+        # 从市场移除该商品
+        self.market_repo.remove_listing(market_id)
+
+        return {
+            "success": True, 
+            "message": f"✅ 成功下架 {item_name}，物品已返回库存"
+        }

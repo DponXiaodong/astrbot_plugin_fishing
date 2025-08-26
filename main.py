@@ -832,6 +832,68 @@ class FishingPlugin(Star):
                 yield event.plain_result(f"❌ 上架饰品失败：{result['message']}")
         else:
             yield event.plain_result("❌ 出错啦！请稍后再试。")
+            
+    @filter.command("下架")
+    async def remove_market_item(self, event: AstrMessageEvent):
+        """下架市场上的物品"""
+        user_id = event.get_sender_id()
+        args = event.message_str.split(" ")
+        if len(args) < 2:
+            yield event.plain_result("❌ 请指定要下架的物品 ID，例如：/下架 12")
+            return
+        
+        item_instance_id = args[1]
+        if not item_instance_id.isdigit():
+            yield event.plain_result("❌ 物品 ID 必须是数字，请检查后重试。")
+            return
+        
+        result = self.market_service.remove_item_from_market(user_id, int(item_instance_id))
+        if result:
+            if result["success"]:
+                yield event.plain_result(result["message"])
+            else:
+                yield event.plain_result(f"❌ 下架失败：{result['message']}")
+        else:
+            yield event.plain_result("❌ 出错啦！请稍后再试。")
+
+    @filter.command("我的上架", alias={"我的商品", "上架列表"})
+    async def my_market_listings(self, event: AstrMessageEvent):
+        """查看自己上架的商品"""
+        user_id = event.get_sender_id()
+        
+        # 获取所有市场商品，然后筛选出用户自己的
+        result = self.market_service.get_market_listings()
+        if not result["success"]:
+            yield event.plain_result(f"❌ 获取市场信息失败：{result.get('message', '未知错误')}")
+            return
+        
+        # 筛选出用户自己的商品
+        my_rods = [item for item in result["rods"] if item['user_id'] == user_id]
+        my_accessories = [item for item in result["accessories"] if item['user_id'] == user_id]
+        
+        if not my_rods and not my_accessories:
+            yield event.plain_result("📦 您还没有上架任何商品。")
+            return
+        
+        message = "【🛒 我的上架商品】\n\n"
+        
+        if my_rods:
+            message += "【🎣 鱼竿】:\n"
+            for rod in my_rods:
+                message += f" - {rod['item_name']} 精{rod['refine_level']} (ID: {rod['market_id']})\n"
+                message += f"   价格: {rod['price']} 金币\n"
+                message += f"   上架时间: {rod['listed_at'].strftime('%Y-%m-%d %H:%M:%S') if hasattr(rod['listed_at'], 'strftime') else rod['listed_at']}\n\n"
+        
+        if my_accessories:
+            message += "【💍 饰品】:\n"
+            for accessory in my_accessories:
+                message += f" - {accessory['item_name']} 精{accessory['refine_level']} (ID: {accessory['market_id']})\n"
+                message += f"   价格: {accessory['price']} 金币\n"
+                message += f"   上架时间: {accessory['listed_at'].strftime('%Y-%m-%d %H:%M:%S') if hasattr(accessory['listed_at'], 'strftime') else accessory['listed_at']}\n\n"
+        
+        message += "💡 使用 `/下架 ID` 命令可以下架指定商品"
+        
+        yield event.plain_result(message)
 
     @filter.command("购买")
     async def buy_item(self, event: AstrMessageEvent):
@@ -1451,3 +1513,429 @@ class FishingPlugin(Star):
         if self.web_admin_task:
             self.web_admin_task.cancel()
         logger.info("钓鱼插件已成功终止。")
+
+
+    @filter.permission_type(PermissionType.ADMIN)
+    @filter.command("批量添加鱼类")
+    async def batch_add_fish(self, event: AstrMessageEvent):
+        """批量添加鱼类"""
+        message_lines = event.message_str.split('\n')
+        if len(message_lines) < 2:
+            help_text = """📋 批量添加鱼类格式说明：
+    /批量添加鱼类
+    名称|描述|稀有度|基础价值|最小重量|最大重量|图标URL
+    小鲫鱼|一条非常常见的小鱼。|1|10|100|500|None
+    泥鳅|滑溜溜的小家伙。|1|15|50|200|None
+
+    注意：
+    - 每行一个鱼类数据
+    - 字段之间用"|"分隔
+    - 稀有度必须是1-5的整数
+    - 重量、价值必须是正整数
+    - 图标URL可以填None"""
+            yield event.plain_result(help_text)
+            return
+        
+        try:
+            added_count = 0
+            error_count = 0
+            errors = []
+            
+            for i, line in enumerate(message_lines[1:], 2):  # 从第2行开始
+                line = line.strip()
+                if not line:
+                    continue
+                    
+                try:
+                    parts = line.split('|')
+                    if len(parts) != 7:
+                        errors.append(f"第{i}行: 字段数量不正确，需要7个字段")
+                        error_count += 1
+                        continue
+                    
+                    name, description, rarity, base_value, min_weight, max_weight, icon_url = parts
+                    
+                    # 数据验证
+                    if not name.strip():
+                        errors.append(f"第{i}行: 鱼类名称不能为空")
+                        error_count += 1
+                        continue
+                    
+                    rarity = int(rarity.strip())
+                    if not (1 <= rarity <= 5):
+                        errors.append(f"第{i}行: 稀有度必须是1-5之间的整数")
+                        error_count += 1
+                        continue
+                    
+                    base_value = int(base_value.strip())
+                    min_weight = int(min_weight.strip())
+                    max_weight = int(max_weight.strip())
+                    
+                    if base_value < 0:
+                        errors.append(f"第{i}行: 基础价值不能为负数")
+                        error_count += 1
+                        continue
+                        
+                    if min_weight >= max_weight:
+                        errors.append(f"第{i}行: 最小重量必须小于最大重量")
+                        error_count += 1
+                        continue
+                    
+                    icon_url = icon_url.strip() if icon_url.strip() != 'None' else None
+                    
+                    # 添加到数据库
+                    fish_data = {
+                        "name": name.strip(),
+                        "description": description.strip(),
+                        "rarity": rarity,
+                        "base_value": base_value,
+                        "min_weight": min_weight,
+                        "max_weight": max_weight,
+                        "icon_url": icon_url
+                    }
+                    
+                    self.item_template_service.add_fish_template(fish_data)
+                    added_count += 1
+                    
+                except ValueError as e:
+                    errors.append(f"第{i}行: 数据格式错误 - {str(e)}")
+                    error_count += 1
+                except Exception as e:
+                    errors.append(f"第{i}行: 添加失败 - {str(e)}")
+                    error_count += 1
+            
+            # 构建结果消息
+            result_msg = f"✅ 批量添加完成！\n📈 成功添加: {added_count} 个鱼类"
+            if error_count > 0:
+                result_msg += f"\n❌ 失败: {error_count} 个"
+                if len(errors) <= 5:  # 只显示前5个错误
+                    result_msg += "\n错误详情:\n" + "\n".join(errors)
+                else:
+                    result_msg += f"\n错误详情(显示前5个):\n" + "\n".join(errors[:5])
+                    result_msg += f"\n...还有{len(errors)-5}个错误"
+            
+            yield event.plain_result(result_msg)
+            
+        except Exception as e:
+            logger.error(f"批量添加鱼类出错: {e}", exc_info=True)
+            yield event.plain_result(f"❌ 批量添加过程中出现错误: {str(e)}")
+
+    @filter.permission_type(PermissionType.ADMIN)
+    @filter.command("批量添加鱼饵")
+    async def batch_add_baits(self, event: AstrMessageEvent):
+        """批量添加鱼饵"""
+        message_lines = event.message_str.split('\n')
+        if len(message_lines) < 2:
+            help_text = """📋 批量添加鱼饵格式说明：
+    /批量添加鱼饵
+    名称|描述|稀有度|效果描述|持续时间(分钟)|成本|所需鱼竿稀有度|成功率加成|稀有鱼几率加成|垃圾减少率|价值加成|数量加成|是否消耗品
+    普通蚯蚓|最基础的鱼饵，随处可见。|1|无特殊效果|0|5|0|0.0|0.0|0.0|1.0|1.0|True
+    红虫|营养丰富的鱼饵，很多鱼都爱吃。|2|提高中小型鱼上钩率|0|20|0|0.05|0.0|0.0|1.0|1.0|True
+
+    注意：
+    - 每行一个鱼饵数据
+    - 字段之间用"|"分隔  
+    - 稀有度必须是1-5的整数
+    - 加成值为小数(如0.05表示5%加成)
+    - 是否消耗品填True或False"""
+            yield event.plain_result(help_text)
+            return
+        
+        try:
+            added_count = 0
+            error_count = 0
+            errors = []
+            
+            for i, line in enumerate(message_lines[1:], 2):
+                line = line.strip()
+                if not line:
+                    continue
+                    
+                try:
+                    parts = line.split('|')
+                    if len(parts) != 13:
+                        errors.append(f"第{i}行: 字段数量不正确，需要13个字段")
+                        error_count += 1
+                        continue
+                    
+                    (name, description, rarity, effect_description, duration_minutes, 
+                    cost, required_rod_rarity, success_rate_modifier, rare_chance_modifier,
+                    garbage_reduction_modifier, value_modifier, quantity_modifier, is_consumable) = parts
+                    
+                    # 数据验证和转换
+                    if not name.strip():
+                        errors.append(f"第{i}行: 鱼饵名称不能为空")
+                        error_count += 1
+                        continue
+                    
+                    rarity = int(rarity.strip())
+                    if not (1 <= rarity <= 5):
+                        errors.append(f"第{i}行: 稀有度必须是1-5之间的整数")
+                        error_count += 1
+                        continue
+                    
+                    bait_data = {
+                        "name": name.strip(),
+                        "description": description.strip(),
+                        "rarity": rarity,
+                        "effect_description": effect_description.strip(),
+                        "duration_minutes": int(duration_minutes.strip()),
+                        "cost": int(cost.strip()),
+                        "required_rod_rarity": int(required_rod_rarity.strip()),
+                        "success_rate_modifier": float(success_rate_modifier.strip()),
+                        "rare_chance_modifier": float(rare_chance_modifier.strip()),
+                        "garbage_reduction_modifier": float(garbage_reduction_modifier.strip()),
+                        "value_modifier": float(value_modifier.strip()),
+                        "quantity_modifier": float(quantity_modifier.strip()),
+                        "is_consumable": is_consumable.strip().lower() == 'true'
+                    }
+                    
+                    self.item_template_service.add_bait_template(bait_data)
+                    added_count += 1
+                    
+                except ValueError as e:
+                    errors.append(f"第{i}行: 数据格式错误 - {str(e)}")
+                    error_count += 1
+                except Exception as e:
+                    errors.append(f"第{i}行: 添加失败 - {str(e)}")
+                    error_count += 1
+            
+            # 构建结果消息
+            result_msg = f"✅ 批量添加完成！\n📈 成功添加: {added_count} 个鱼饵"
+            if error_count > 0:
+                result_msg += f"\n❌ 失败: {error_count} 个"
+                if len(errors) <= 5:
+                    result_msg += "\n错误详情:\n" + "\n".join(errors)
+                else:
+                    result_msg += f"\n错误详情(显示前5个):\n" + "\n".join(errors[:5])
+                    result_msg += f"\n...还有{len(errors)-5}个错误"
+            
+            yield event.plain_result(result_msg)
+            
+        except Exception as e:
+            logger.error(f"批量添加鱼饵出错: {e}", exc_info=True)
+            yield event.plain_result(f"❌ 批量添加过程中出现错误: {str(e)}")
+
+    @filter.permission_type(PermissionType.ADMIN)
+    @filter.command("批量添加鱼竿")
+    async def batch_add_rods(self, event: AstrMessageEvent):
+        """批量添加鱼竿"""
+        message_lines = event.message_str.split('\n')
+        if len(message_lines) < 2:
+            help_text = """📋 批量添加鱼竿格式说明：
+    /批量添加鱼竿
+    名称|描述|稀有度|来源|购买价格|质量加成|数量加成|稀有鱼几率加成|耐久度|图标URL
+    新手木竿|刚入门时的可靠伙伴|1|shop|50|1.0|1.0|0.0|None|None
+    竹制鱼竿|轻巧耐用|2|shop|500|1.0|1.0|0.01|None|None
+
+    注意：
+    - 每行一个鱼竿数据
+    - 字段之间用"|"分隔
+    - 稀有度必须是1-5的整数  
+    - 来源必须是shop、gacha或event
+    - 加成值为小数(如1.05表示5%加成)
+    - 购买价格、耐久度、图标URL可以填None"""
+            yield event.plain_result(help_text)
+            return
+        
+        try:
+            added_count = 0
+            error_count = 0
+            errors = []
+            
+            for i, line in enumerate(message_lines[1:], 2):
+                line = line.strip()
+                if not line:
+                    continue
+                    
+                try:
+                    parts = line.split('|')
+                    if len(parts) != 10:
+                        errors.append(f"第{i}行: 字段数量不正确，需要10个字段")
+                        error_count += 1
+                        continue
+                    
+                    (name, description, rarity, source, purchase_cost, quality_mod, 
+                    quantity_mod, rare_mod, durability, icon_url) = parts
+                    
+                    # 数据验证和转换
+                    if not name.strip():
+                        errors.append(f"第{i}行: 鱼竿名称不能为空")
+                        error_count += 1
+                        continue
+                    
+                    rarity = int(rarity.strip())
+                    if not (1 <= rarity <= 5):
+                        errors.append(f"第{i}行: 稀有度必须是1-5之间的整数")
+                        error_count += 1
+                        continue
+                    
+                    source = source.strip()
+                    if source not in ['shop', 'gacha', 'event']:
+                        errors.append(f"第{i}行: 来源必须是shop、gacha或event")
+                        error_count += 1
+                        continue
+                    
+                    rod_data = {
+                        "name": name.strip(),
+                        "description": description.strip(),
+                        "rarity": rarity,
+                        "source": source,
+                        "purchase_cost": int(purchase_cost.strip()) if purchase_cost.strip() != 'None' else None,
+                        "bonus_fish_quality_modifier": float(quality_mod.strip()),
+                        "bonus_fish_quantity_modifier": float(quantity_mod.strip()),
+                        "bonus_rare_fish_chance": float(rare_mod.strip()),
+                        "durability": int(durability.strip()) if durability.strip() != 'None' else None,
+                        "icon_url": icon_url.strip() if icon_url.strip() != 'None' else None
+                    }
+                    
+                    self.item_template_service.add_rod_template(rod_data)
+                    added_count += 1
+                    
+                except ValueError as e:
+                    errors.append(f"第{i}行: 数据格式错误 - {str(e)}")
+                    error_count += 1
+                except Exception as e:
+                    errors.append(f"第{i}行: 添加失败 - {str(e)}")
+                    error_count += 1
+            
+            # 构建结果消息
+            result_msg = f"✅ 批量添加完成！\n📈 成功添加: {added_count} 个鱼竿"
+            if error_count > 0:
+                result_msg += f"\n❌ 失败: {error_count} 个"
+                if len(errors) <= 5:
+                    result_msg += "\n错误详情:\n" + "\n".join(errors)
+                else:
+                    result_msg += f"\n错误详情(显示前5个):\n" + "\n".join(errors[:5])
+                    result_msg += f"\n...还有{len(errors)-5}个错误"
+            
+            yield event.plain_result(result_msg)
+            
+        except Exception as e:
+            logger.error(f"批量添加鱼竿出错: {e}", exc_info=True)
+            yield event.plain_result(f"❌ 批量添加过程中出现错误: {str(e)}")
+
+    @filter.permission_type(PermissionType.ADMIN)
+    @filter.command("批量添加饰品")
+    async def batch_add_accessories(self, event: AstrMessageEvent):
+        """批量添加饰品"""
+        message_lines = event.message_str.split('\n')
+        if len(message_lines) < 2:
+            help_text = """📋 批量添加饰品格式说明：
+    /批量添加饰品
+    名称|描述|稀有度|槽位类型|质量加成|数量加成|稀有鱼几率加成|金币加成|其他加成描述|图标URL
+    幸运四叶草|带来好运的小饰品|2|general|1.05|1.0|0.01|1.02|None|None
+    渔夫的戒指|刻有古老符文的戒指|3|general|1.0|1.0|0.0|1.10|None|None
+
+    注意：
+    - 每行一个饰品数据
+    - 字段之间用"|"分隔
+    - 稀有度必须是1-5的整数
+    - 槽位类型一般填general
+    - 加成值为小数(如1.05表示5%加成)
+    - 其他加成描述、图标URL可以填None"""
+            yield event.plain_result(help_text)
+            return
+        
+        try:
+            added_count = 0
+            error_count = 0
+            errors = []
+            
+            for i, line in enumerate(message_lines[1:], 2):
+                line = line.strip()
+                if not line:
+                    continue
+                    
+                try:
+                    parts = line.split('|')
+                    if len(parts) != 10:
+                        errors.append(f"第{i}行: 字段数量不正确，需要10个字段")
+                        error_count += 1
+                        continue
+                    
+                    (name, description, rarity, slot_type, quality_mod, quantity_mod, 
+                    rare_mod, coin_mod, other_desc, icon_url) = parts
+                    
+                    # 数据验证和转换
+                    if not name.strip():
+                        errors.append(f"第{i}行: 饰品名称不能为空")
+                        error_count += 1
+                        continue
+                    
+                    rarity = int(rarity.strip())
+                    if not (1 <= rarity <= 5):
+                        errors.append(f"第{i}行: 稀有度必须是1-5之间的整数")
+                        error_count += 1
+                        continue
+                    
+                    accessory_data = {
+                        "name": name.strip(),
+                        "description": description.strip(),
+                        "rarity": rarity,
+                        "slot_type": slot_type.strip(),
+                        "bonus_fish_quality_modifier": float(quality_mod.strip()),
+                        "bonus_fish_quantity_modifier": float(quantity_mod.strip()),
+                        "bonus_rare_fish_chance": float(rare_mod.strip()),
+                        "bonus_coin_modifier": float(coin_mod.strip()),
+                        "other_bonus_description": other_desc.strip() if other_desc.strip() != 'None' else None,
+                        "icon_url": icon_url.strip() if icon_url.strip() != 'None' else None
+                    }
+                    
+                    self.item_template_service.add_accessory_template(accessory_data)
+                    added_count += 1
+                    
+                except ValueError as e:
+                    errors.append(f"第{i}行: 数据格式错误 - {str(e)}")
+                    error_count += 1
+                except Exception as e:
+                    errors.append(f"第{i}行: 添加失败 - {str(e)}")
+                    error_count += 1
+            
+            # 构建结果消息
+            result_msg = f"✅ 批量添加完成！\n📈 成功添加: {added_count} 个饰品"
+            if error_count > 0:
+                result_msg += f"\n❌ 失败: {error_count} 个"
+                if len(errors) <= 5:
+                    result_msg += "\n错误详情:\n" + "\n".join(errors)
+                else:
+                    result_msg += f"\n错误详情(显示前5个):\n" + "\n".join(errors[:5])
+                    result_msg += f"\n...还有{len(errors)-5}个错误"
+            
+            yield event.plain_result(result_msg)
+            
+        except Exception as e:
+            logger.error(f"批量添加饰品出错: {e}", exc_info=True)
+            yield event.plain_result(f"❌ 批量添加过程中出现错误: {str(e)}")
+
+    @filter.permission_type(PermissionType.ADMIN)
+    @filter.command("批量添加帮助")
+    async def batch_add_help(self, event: AstrMessageEvent):
+        """显示批量添加的帮助信息"""
+        help_text = """📋 批量添加功能帮助
+
+    🐟 **批量添加鱼类**
+    /批量添加鱼类
+    名称|描述|稀有度|基础价值|最小重量|最大重量|图标URL
+
+    🎣 **批量添加鱼竿** 
+    /批量添加鱼竿
+    名称|描述|稀有度|来源|购买价格|质量加成|数量加成|稀有鱼几率加成|耐久度|图标URL
+
+    🐛 **批量添加鱼饵**
+    /批量添加鱼饵
+    名称|描述|稀有度|效果描述|持续时间|成本|所需鱼竿稀有度|成功率加成|稀有鱼几率加成|垃圾减少率|价值加成|数量加成|是否消耗品
+
+    💍 **批量添加饰品**
+    /批量添加饰品  
+    名称|描述|稀有度|槽位类型|质量加成|数量加成|稀有鱼几率加成|金币加成|其他加成描述|图标URL
+
+    **注意事项：**
+    - 每行一个物品数据
+    - 字段之间用"|"分隔
+    - 稀有度必须是1-5的整数
+    - None值填写None
+    - 小数值如1.05表示5%加成
+    - 错误数据会被跳过并显示错误信息"""
+        
+        yield event.plain_result(help_text)
