@@ -28,3 +28,22 @@ def calculate_after_refine(before_value: float, refine_level: int) -> float:
     if before_value < 1:
         return before_value * (1 + 0.1 * (refine_level - 1 if refine_level < 5 else 5))
     return (before_value - 1) * (1 + 0.1 * (refine_level - 1 if refine_level < 5 else 5)) + 1
+
+def to_percentage(value: float, precision: int = 8) -> str:
+    """
+    将小数转换为百分比字符串，支持指定精度
+    
+    Args:
+        value: 要转换的小数值
+        precision: 小数点后的位数，默认8位
+    
+    Returns:
+        百分比字符串，如 "0.00123456%"
+    """
+    if value >= 1.0:
+        # 如果值大于等于1，减去1后转换（处理概率计算中的偏移）
+        percentage = (value - 1.0) * 100
+    else:
+        percentage = value * 100
+    
+    return f"{percentage:.{precision}f}%"

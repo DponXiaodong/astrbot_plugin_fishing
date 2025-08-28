@@ -1015,7 +1015,15 @@ class FishingPlugin(Star):
 
                 if result["probabilities"]:
                     for item in result["probabilities"]:
-                        message += f" - {'⭐' * item.get('item_rarity', 0)} {item['item_name']} (概率: {to_percentage(item['probability'])})\n"
+                        # 直接计算概率显示，支持更高精度
+                        probability = item['probability']
+                        if probability >= 1.0:
+                            percentage = (probability - 1.0) * 100
+                        else:
+                            percentage = probability * 100
+                        probability_str = f"{percentage:.8f}%"
+                        
+                        message += f" - {'⭐' * item.get('item_rarity', 0)} {item['item_name']} (概率: {probability_str})\n"
                 yield event.plain_result(message)
             else:
                 yield event.plain_result(f"❌ 查看卡池失败：{result['message']}")
