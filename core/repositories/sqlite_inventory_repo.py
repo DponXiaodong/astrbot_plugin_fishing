@@ -1,7 +1,8 @@
 import sqlite3
 import threading
-from typing import Optional, List, Dict
+from typing import List, Dict, Any, Optional, Tuple
 from datetime import datetime
+from astrbot.api import logger
 
 # 导入抽象基类和领域模型
 from .abstract_repository import AbstractInventoryRepository
@@ -426,3 +427,211 @@ class SqliteInventoryRepository(AbstractInventoryRepository):
                 WHERE user_id = ? AND accessory_id = ?
             """, (user_id, accessory_id))
             return [self._row_to_accessory_instance(row) for row in cursor.fetchall()]
+
+    def batch_add_rod_instances(self, user_id: str, rod_data_list: List[Tuple[int, int]]) -> List[int]:
+        """
+        批量添加鱼竿实例。如果批量插入失败，会自动回退到单个插入。
+        
+        Args:
+            user_id: 用户ID
+            rod_data_list: 鱼竿数据列表，每个元素为 (rod_id, durability)
+        
+        Returns:
+            新创建的鱼竿实例ID列表
+        """
+        if not rod_data_list:
+            return []
+            
+        # 首先尝试批量插入
+        try:
+            return self._batch_insert_rod_instances(user_id, rod_data_list)
+        except Exception as e:
+            logger.warning(f"批量插入鱼竿失败，回退到单个插入: {e}")
+            # 回退到单个插入
+            return self._fallback_add_rod_instances(user_id, rod_data_list)
+    
+    def _batch_insert_rod_instances(self, user_id: str, rod_data_list: List[Tuple[int, int]]) -> List[int]:
+        """实际的批量插入实现"""
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.cursor()
+            
+            try:
+                # 开始事务
+                conn.execute("BEGIN TRANSACTION")
+                
+                # 构建批量插入语句 - 使用正确的表名和字段名
+                placeholders = ",".join(["(?, ?, ?, CURRENT_TIMESTAMP, 0, 1)"] * len(rod_data_list))  # is_equipped=0, refine_level=1
+                sql = f"""
+                INSERT INTO user_rods (user_id, rod_id, current_durability, obtained_at, is_equipped, refine_level)
+                VALUES {placeholders}
+                """
+                
+                # 准备参数：user_id, rod_id, current_durability 为一组
+                params = []
+                for rod_id, durability in rod_data_list:
+                    params.extend([user_id, rod_id, durability])
+                
+                cursor.execute(sql, params)
+                
+                # 获取插入的ID范围
+                last_id = cursor.lastrowid
+                first_id = last_id - len(rod_data_list) + 1
+                inserted_ids = list(range(first_id, last_id + 1))
+                
+                # 提交事务
+                conn.commit()
+                
+                logger.info(f"批量插入 {len(rod_data_list)} 个鱼竿实例成功，ID范围: {first_id}-{last_id}")
+                return inserted_ids
+                
+            except Exception as e:
+                # 回滚事务
+                conn.rollback()
+                raise e
+    
+    def _fallback_add_rod_instances(self, user_id: str, rod_data_list: List[Tuple[int, int]]) -> List[int]:
+        """回退方案：单个插入鱼竿实例"""
+        inserted_ids = []
+        for rod_id, durability in rod_data_list:
+            try:
+                # 使用现有的单个插入方法
+                instance_id = self.add_rod_instance(user_id, rod_id, durability)
+                if instance_id:
+                    inserted_ids.append(instance_id)
+            except Exception as e:
+                logger.error(f"插入单个鱼竿实例失败 (rod_id: {rod_id}): {e}")
+                continue
+        
+        logger.info(f"回退方案完成：成功插入 {len(inserted_ids)} 个鱼竿实例")
+        return inserted_ids
+    
+    def batch_add_accessory_instances(self, user_id: str, accessory_ids: List[int]) -> List[int]:
+        """
+        批量添加饰品实例。如果批量插入失败，会自动回退到单个插入。
+        
+        Args:
+            user_id: 用户ID
+            accessory_ids: 饰品ID列表
+            
+        Returns:
+            新创建的饰品实例ID列表
+        """
+        if not accessory_ids:
+            return []
+            
+        # 首先尝试批量插入
+        try:
+            return self._batch_insert_accessory_instances(user_id, accessory_ids)
+        except Exception as e:
+            logger.warning(f"批量插入饰品失败，回退到单个插入: {e}")
+            # 回退到单个插入
+            return self._fallback_add_accessory_instances(user_id, accessory_ids)
+    
+    def _batch_insert_accessory_instances(self, user_id: str, accessory_ids: List[int]) -> List[int]:
+        """实际的批量插入实现"""
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.cursor()
+            
+            try:
+                # 开始事务
+                conn.execute("BEGIN TRANSACTION")
+                
+                # 构建批量插入语句 - 使用正确的表名和字段名
+                placeholders = ",".join(["(?, ?, CURRENT_TIMESTAMP, 0, 1)"] * len(accessory_ids))  # is_equipped=0, refine_level=1
+                sql = f"""
+                INSERT INTO user_accessories (user_id, accessory_id, obtained_at, is_equipped, refine_level)
+                VALUES {placeholders}
+                """
+                
+                # 准备参数：user_id, accessory_id 为一组
+                params = []
+                for accessory_id in accessory_ids:
+                    params.extend([user_id, accessory_id])
+                
+                cursor.execute(sql, params)
+                
+                # 获取插入的ID范围
+                last_id = cursor.lastrowid
+                first_id = last_id - len(accessory_ids) + 1
+                inserted_ids = list(range(first_id, last_id + 1))
+                
+                # 提交事务
+                conn.commit()
+                
+                logger.info(f"批量插入 {len(accessory_ids)} 个饰品实例成功，ID范围: {first_id}-{last_id}")
+                return inserted_ids
+                
+            except Exception as e:
+                # 回滚事务
+                conn.rollback()
+                raise e
+    
+    def _fallback_add_accessory_instances(self, user_id: str, accessory_ids: List[int]) -> List[int]:
+        """回退方案：单个插入饰品实例"""
+        inserted_ids = []
+        for accessory_id in accessory_ids:
+            try:
+                # 使用现有的单个插入方法
+                instance_id = self.add_accessory_instance(user_id, accessory_id)
+                if instance_id:
+                    inserted_ids.append(instance_id)
+            except Exception as e:
+                logger.error(f"插入单个饰品实例失败 (accessory_id: {accessory_id}): {e}")
+                continue
+        
+        logger.info(f"回退方案完成：成功插入 {len(inserted_ids)} 个饰品实例")
+        return inserted_ids
+    
+    def batch_update_bait_quantities(self, user_id: str, bait_updates: List[Tuple[int, int]]) -> None:
+        """
+        批量更新鱼饵数量。
+        
+        Args:
+            user_id: 用户ID
+            bait_updates: 更新列表，每个元素为 (bait_id, delta_quantity)
+        """
+        if not bait_updates:
+            return
+            
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.cursor()
+            
+            try:
+                # 开始事务
+                conn.execute("BEGIN TRANSACTION")
+                
+                for bait_id, delta_quantity in bait_updates:
+                    if delta_quantity == 0:
+                        continue
+                        
+                    # 检查当前数量 - 使用正确的表名
+                    cursor.execute("""
+                        SELECT quantity FROM user_bait_inventory 
+                        WHERE user_id = ? AND bait_id = ?
+                    """, (user_id, bait_id))
+                    
+                    result = cursor.fetchone()
+                    if result:
+                        new_quantity = max(0, result[0] + delta_quantity)
+                        cursor.execute("""
+                            UPDATE user_bait_inventory 
+                            SET quantity = ? 
+                            WHERE user_id = ? AND bait_id = ?
+                        """, (new_quantity, user_id, bait_id))
+                    elif delta_quantity > 0:
+                        # 新增记录
+                        cursor.execute("""
+                            INSERT INTO user_bait_inventory (user_id, bait_id, quantity)
+                            VALUES (?, ?, ?)
+                        """, (user_id, bait_id, delta_quantity))
+                
+                # 提交事务
+                conn.commit()
+                
+                logger.info(f"批量更新 {len(bait_updates)} 种鱼饵数量")
+                
+            except Exception as e:
+                # 回滚事务
+                conn.rollback()
+                logger.error(f"批量更新鱼饵数量失败: {e}")
+                raise e

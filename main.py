@@ -915,8 +915,8 @@ class FishingPlugin(Star):
                 yield event.plain_result(f"❌ 购买失败：{result['message']}")
         else:
             yield event.plain_result("❌ 出错啦！请稍后再试。")
-
-    # ===========抽卡与概率玩法==========
+            
+# ===========抽卡与概率玩法==========
     @filter.command("抽卡", alias={"抽奖"})
     async def gacha(self, event: AstrMessageEvent):
         """抽卡"""
@@ -934,7 +934,8 @@ class FishingPlugin(Star):
             # 添加卡池详细信息
             message += "【📋 卡池详情】使用「查看卡池 ID」命令查看详细物品概率\n"
             message += "【🎲 抽卡命令】使用「抽卡 ID」命令选择抽卡池进行单次抽卡\n"
-            message += "【🎯 十连命令】使用「十连 ID」命令进行十连抽卡"
+            message += "【🎯 十连命令】使用「十连 ID」命令进行十连抽卡\n"
+            message += "【🚀 百连命令】使用「百连 ID」命令进行百连抽卡"
             yield event.plain_result(message)
             return
         pool_id = args[1]
@@ -991,6 +992,87 @@ class FishingPlugin(Star):
         else:
             yield event.plain_result("❌ 出错啦！请稍后再试。")
 
+    @filter.command("百连")
+    async def hundred_gacha(self, event: AstrMessageEvent):
+        """百连抽卡 - 使用内存聚合优化，支持大批量抽奖"""
+        user_id = event.get_sender_id()
+        args = event.message_str.split(" ")
+        if len(args) < 2:
+            yield event.plain_result("❌ 请指定要进行百连抽卡的抽奖池 ID，例如：/百连 1")
+            return
+        pool_id = args[1]
+        if not pool_id.isdigit():
+            yield event.plain_result("❌ 抽奖池 ID 必须是数字，请检查后重试。")
+            return
+        
+        pool_id = int(pool_id)
+        
+        # 添加确认提示，因为百连成本较高
+        pool_info = self.gacha_service.gacha_repo.get_pool_by_id(pool_id)
+        if not pool_info:
+            yield event.plain_result("❌ 指定的抽奖池不存在。")
+            return
+            
+        total_cost = pool_info.cost_coins * 100
+        user = self.user_repo.get_by_id(user_id)
+        if not user:
+            yield event.plain_result("❌ 您还没有注册，请先使用 /注册 命令注册。")
+            return
+            
+        if not user.can_afford(total_cost):
+            yield event.plain_result(f"💰 金币不足！百连需要 {total_cost} 金币，您当前拥有 {user.coins} 金币。")
+            return
+        
+        # 提示用户即将进行的操作
+        yield event.plain_result(f"🚀 正在进行百连抽卡，预计花费 {total_cost} 金币...\n⏳ 请稍等，正在使用处理...")
+        
+        result = self.gacha_service.perform_draw(user_id, pool_id, num_draws=100)
+        if result:
+            if result["success"]:
+                items = result.get("results", [])
+                
+                # 统计结果
+                rarity_count = {1: 0, 2: 0, 3: 0, 4: 0, 5: 0}
+                coins_total = 0
+                special_items = []
+                
+                for item in items:
+                    if item.get("type") == "coins":
+                        coins_total += item['quantity']
+                    else:
+                        rarity = item.get('rarity', 1)
+                        rarity_count[rarity] += 1
+                        
+                        # 收集4星及以上的特殊物品
+                        if rarity >= 4:
+                            special_items.append(f"{'⭐' * rarity} {item['name']}")
+                
+                # 构建消息
+                message = f"🎊 百连抽卡完成！总计获得 {len(items)} 件物品：\n\n"
+                
+                # 稀有度统计
+                message += "📊 【稀有度统计】\n"
+                for rarity in range(5, 0, -1):
+                    if rarity_count[rarity] > 0:
+                        message += f"{'⭐' * rarity}：{rarity_count[rarity]} 件\n"
+                
+                if coins_total > 0:
+                    message += f"💰 金币：{coins_total}\n"
+                
+                # 显示4星及以上物品
+                if special_items:
+                    message += f"\n🌟 【珍稀物品】\n"
+                    for item in special_items[:10]:  # 最多显示10个
+                        message += f"{item}\n"
+                    if len(special_items) > 10:
+                        message += f"...还有{len(special_items)-10}件珍稀物品\n"
+                
+                yield event.plain_result(message)
+            else:
+                yield event.plain_result(f"❌ 抽卡失败：{result['message']}")
+        else:
+            yield event.plain_result("❌ 出错啦！请稍后再试。")
+
     @filter.command("查看卡池")
     async def view_gacha_pool(self, event: AstrMessageEvent):
         """查看当前卡池"""
@@ -1010,7 +1092,9 @@ class FishingPlugin(Star):
                 message = "【🎰 卡池详情】\n\n"
                 message += f"ID: {pool['gacha_pool_id']} - {pool['name']}\n"
                 message += f"描述: {pool['description']}\n"
-                message += f"花费: {pool['cost_coins']} 金币 / 次\n\n"
+                message += f"花费: {pool['cost_coins']} 金币 / 次\n"
+                message += f"十连花费: {pool['cost_coins'] * 10} 金币\n"
+                message += f"百连花费: {pool['cost_coins'] * 100} 金币\n\n"
                 message += "【📋 物品概率】\n"
 
                 if result["probabilities"]:

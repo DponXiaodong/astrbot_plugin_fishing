@@ -1,5 +1,5 @@
 from abc import ABC, abstractmethod
-from typing import List, Optional, Dict, Any
+from typing import List, Optional, Dict, Any,Tuple
 from datetime import date, datetime
 
 # 从领域模型导入所有需要的实体
@@ -210,6 +210,33 @@ class AbstractInventoryRepository(ABC):
     # 获取用户的同一饰品实例
     @abstractmethod
     def get_same_accessory_instances(self, user_id, accessory_id) -> List[UserAccessoryInstance]: pass
+    @abstractmethod
+    def batch_add_rod_instances(self, user_id: str, rod_data_list: List[Tuple[int, int]]) -> List[int]:
+        """
+        批量添加鱼竿实例。
+        
+        Args:
+            user_id: 用户ID
+            rod_data_list: 鱼竿数据列表，每个元素为 (rod_id, durability)
+        
+        Returns:
+            新创建的鱼竿实例ID列表
+        """
+        pass
+    
+    @abstractmethod 
+    def batch_add_accessory_instances(self, user_id: str, accessory_ids: List[int]) -> List[int]:
+        """
+        批量添加饰品实例。
+        
+        Args:
+            user_id: 用户ID
+            accessory_ids: 饰品ID列表
+            
+        Returns:
+            新创建的饰品实例ID列表
+        """
+        pass
 
 
 class AbstractGachaRepository(ABC):
