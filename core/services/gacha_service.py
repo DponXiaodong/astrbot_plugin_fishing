@@ -39,7 +39,8 @@ class GachaService:
         inventory_repo: AbstractInventoryRepository,
         item_template_repo: AbstractItemTemplateRepository,
         log_repo: AbstractLogRepository,
-        achievement_repo: AbstractAchievementRepository
+        achievement_repo: AbstractAchievementRepository,
+        config: Dict[str, Any] = None  # 添加配置参数
     ):
         self.gacha_repo = gacha_repo
         self.user_repo = user_repo
@@ -47,6 +48,7 @@ class GachaService:
         self.item_template_repo = item_template_repo
         self.achievement_repo = achievement_repo
         self.log_repo = log_repo
+        self.config = config or {}
 
     def get_all_pools(self) -> Dict[str, Any]:
         """提供查看所有卡池信息的功能。"""
@@ -102,6 +104,7 @@ class GachaService:
     def perform_draw(self, user_id: str, pool_id: int, num_draws: int = 1) -> Dict[str, Any]:
         """
         实现单抽和多连抽的核心逻辑，使用内存聚合 + 批量写入优化。
+        十连以上自动卖出四星以下物品。
 
         Args:
             user_id: 抽卡的用户ID
@@ -138,36 +141,108 @@ class GachaService:
         self.user_repo.update(user)
 
         # 3. 内存聚合 + 批量发放奖励
-        granted_rewards = self._grant_rewards_batch(user_id, draw_results)
+        # 十连以上启用自动卖出四星以下物品
+        auto_sell_enabled = num_draws >= 10
+        granted_rewards = self._grant_rewards_batch(user_id, draw_results, auto_sell_enabled)
         
         return {"success": True, "results": granted_rewards}
 
-    def _grant_rewards_batch(self, user_id: str, draw_results: List[GachaPoolItem]) -> List[Dict[str, Any]]:
+    def _calculate_sell_price(self, item_type: str, item_rarity: int) -> int:
+        """
+        计算物品的卖出价格
+        
+        Args:
+            item_type: 物品类型
+            item_rarity: 物品稀有度
+            
+        Returns:
+            卖出价格
+        """
+        sell_prices = self.config.get("sell_prices", {}).get("by_rarity", {
+            "1": 100,
+            "2": 500, 
+            "3": 1000,
+            "4": 5000,
+            "5": 10000
+        })
+        
+        # 根据物品类型调整价格
+        base_price = sell_prices.get(str(item_rarity), 100)
+        
+        # 鱼饵价格较低
+        if item_type == "bait":
+            base_price = max(10, base_price // 10)
+            
+        return base_price
+
+    def _grant_rewards_batch(self, user_id: str, draw_results: List[GachaPoolItem], auto_sell_low_rarity: bool = False) -> List[Dict[str, Any]]:
         """
         批量发放奖励，使用内存聚合 + 数据库批量插入优化性能。
+        支持自动卖出四星以下物品功能。
         
         Args:
             user_id: 用户ID
             draw_results: 抽奖结果列表
+            auto_sell_low_rarity: 是否自动卖出四星以下物品
             
         Returns:
             用户可见的奖励列表
         """
         # 内存聚合数据结构
         aggregated_rewards = {
-            "rods": [],           # 鱼竿列表 - 现在支持批量插入
-            "accessories": [],    # 饰品列表 - 现在支持批量插入  
+            "rods": [],           # 鱼竿列表
+            "accessories": [],    # 饰品列表  
             "baits": defaultdict(int),  # 鱼饵聚合 {bait_id: total_quantity}
             "coins": 0,          # 金币总数
             "titles": set(),     # 称号集合（避免重复）
+        }
+        
+        # 自动卖出统计
+        auto_sell_stats = {
+            "sold_items_count": 0,
+            "sold_coins_total": 0,
+            "sold_by_rarity": {1: 0, 2: 0, 3: 0}  # 按稀有度统计卖出数量
         }
         
         # 日志记录数据
         log_records = []
         granted_rewards = []
         
-        # 1. 内存聚合阶段
+        # 1. 内存聚合阶段 - 处理自动卖出逻辑
         for item in draw_results:
+            item_rarity = self._get_item_rarity(item)
+            
+            # 十连以上且四星以下物品自动卖出（金币和称号除外）
+            if (auto_sell_low_rarity and 
+                item_rarity < 4 and 
+                item.item_type not in ['coins', 'titles']):
+                
+                # 计算卖出价格
+                sell_price = self._calculate_sell_price(item.item_type, item_rarity)
+                sell_coins = sell_price * item.quantity
+                
+                # 累加到金币
+                aggregated_rewards["coins"] += sell_coins
+                
+                # 统计信息
+                auto_sell_stats["sold_items_count"] += item.quantity
+                auto_sell_stats["sold_coins_total"] += sell_coins
+                auto_sell_stats["sold_by_rarity"][item_rarity] += item.quantity
+                
+                # 添加到显示结果（标记为已卖出）
+                item_name = self._get_item_name(item)
+                granted_rewards.append({
+                    "type": f"sold_{item.item_type}",
+                    "name": f"{item_name}（已卖出）",
+                    "rarity": item_rarity,
+                    "quantity": item.quantity,
+                    "sell_price": sell_coins
+                })
+                
+                # 不记录到抽奖日志中，因为直接卖出了
+                continue
+            
+            # 正常处理逻辑
             if item.item_type == "rod":
                 aggregated_rewards["rods"].append(item)
             elif item.item_type == "accessory":
@@ -179,15 +254,14 @@ class GachaService:
             elif item.item_type == "titles":
                 aggregated_rewards["titles"].add(item.item_id)
 
-        # 2. 批量数据库操作阶段
+        # 2. 批量数据库操作阶段（与原代码相同）
         try:
             db_operations_count = 0
             
-            # 批量添加鱼竿 - 使用数据库层批量插入
+            # 批量添加鱼竿
             if aggregated_rewards["rods"]:
-                # 准备批量插入数据
                 rod_data_list = []
-                rod_templates = {}  # 缓存模板数据
+                rod_templates = {}
                 
                 for rod_item in aggregated_rewards["rods"]:
                     rod_template = self.item_template_repo.get_rod_by_id(rod_item.item_id)
@@ -195,13 +269,11 @@ class GachaService:
                         rod_templates[rod_item.item_id] = rod_template
                         rod_data_list.append((rod_item.item_id, rod_template.durability))
                 
-                # 执行批量插入
                 if rod_data_list:
                     inserted_ids = self.inventory_repo.batch_add_rod_instances(user_id, rod_data_list)
-                    db_operations_count += 1  # 一次批量操作
+                    db_operations_count += 1
                     
-                    # 构建返回结果和日志
-                    for i, rod_item in enumerate(aggregated_rewards["rods"]):
+                    for rod_item in aggregated_rewards["rods"]:
                         if rod_item.item_id in rod_templates:
                             rod_template = rod_templates[rod_item.item_id]
                             granted_rewards.append({
@@ -210,14 +282,12 @@ class GachaService:
                                 "name": rod_template.name,
                                 "rarity": rod_template.rarity
                             })
-                            # 记录日志
                             self._create_log_record(log_records, user_id, rod_item, rod_template.name, rod_template.rarity)
 
-            # 批量添加饰品 - 使用数据库层批量插入
+            # 批量添加饰品
             if aggregated_rewards["accessories"]:
-                # 准备批量插入数据
                 accessory_ids = []
-                accessory_templates = {}  # 缓存模板数据
+                accessory_templates = {}
                 
                 for accessory_item in aggregated_rewards["accessories"]:
                     accessory_template = self.item_template_repo.get_accessory_by_id(accessory_item.item_id)
@@ -225,12 +295,10 @@ class GachaService:
                         accessory_templates[accessory_item.item_id] = accessory_template
                         accessory_ids.append(accessory_item.item_id)
                 
-                # 执行批量插入
                 if accessory_ids:
                     inserted_ids = self.inventory_repo.batch_add_accessory_instances(user_id, accessory_ids)
-                    db_operations_count += 1  # 一次批量操作
+                    db_operations_count += 1
                     
-                    # 构建返回结果和日志
                     for accessory_item in aggregated_rewards["accessories"]:
                         if accessory_item.item_id in accessory_templates:
                             accessory_template = accessory_templates[accessory_item.item_id]
@@ -240,24 +308,20 @@ class GachaService:
                                 "name": accessory_template.name,
                                 "rarity": accessory_template.rarity
                             })
-                            # 记录日志
                             self._create_log_record(log_records, user_id, accessory_item, accessory_template.name, accessory_template.rarity)
 
             # 批量更新鱼饵数量
             if aggregated_rewards["baits"]:
-                # 检查是否有batch_update_bait_quantities方法，否则回退到单个更新
                 if hasattr(self.inventory_repo, 'batch_update_bait_quantities'):
                     bait_updates = [(bait_id, quantity) for bait_id, quantity in aggregated_rewards["baits"].items()]
                     self.inventory_repo.batch_update_bait_quantities(user_id, bait_updates)
-                    db_operations_count += 1  # 一次批量操作
+                    db_operations_count += 1
                 else:
-                    # 回退到原有逻辑
                     for bait_id, total_quantity in aggregated_rewards["baits"].items():
                         if total_quantity > 0:
                             self.inventory_repo.update_bait_quantity(user_id, bait_id, total_quantity)
                             db_operations_count += 1
                 
-                # 构建返回结果和日志
                 for bait_id, total_quantity in aggregated_rewards["baits"].items():
                     bait_template = self.item_template_repo.get_bait_by_id(bait_id)
                     if bait_template and total_quantity > 0:
@@ -268,7 +332,6 @@ class GachaService:
                             "rarity": bait_template.rarity,
                             "quantity": total_quantity
                         })
-                        # 创建虚拟item用于日志记录
                         virtual_item = type('obj', (object,), {
                             'gacha_pool_id': 0, 
                             'item_type': 'bait', 
@@ -284,18 +347,42 @@ class GachaService:
                 self.user_repo.update(user)
                 db_operations_count += 1
                 
-                granted_rewards.append({
-                    "type": "coins",
-                    "quantity": aggregated_rewards["coins"]
-                })
-                # 创建虚拟item用于日志记录
-                virtual_item = type('obj', (object,), {
-                    'gacha_pool_id': 0,
-                    'item_type': 'coins',
-                    'item_id': 0,
-                    'quantity': aggregated_rewards["coins"]
-                })
-                self._create_log_record(log_records, user_id, virtual_item, f"{aggregated_rewards['coins']} 金币", 1)
+                # 分别显示正常获得的金币和卖出获得的金币
+                if auto_sell_low_rarity and auto_sell_stats["sold_coins_total"] > 0:
+                    normal_coins = aggregated_rewards["coins"] - auto_sell_stats["sold_coins_total"]
+                    if normal_coins > 0:
+                        granted_rewards.append({
+                            "type": "coins",
+                            "quantity": normal_coins
+                        })
+                        # 记录正常金币的日志
+                        virtual_item = type('obj', (object,), {
+                            'gacha_pool_id': 0,
+                            'item_type': 'coins',
+                            'item_id': 0,
+                            'quantity': normal_coins
+                        })
+                        self._create_log_record(log_records, user_id, virtual_item, f"{normal_coins} 金币", 1)
+                    
+                    # 添加卖出金币的汇总信息
+                    granted_rewards.append({
+                        "type": "sold_coins_summary",
+                        "quantity": auto_sell_stats["sold_coins_total"],
+                        "sold_items_count": auto_sell_stats["sold_items_count"],
+                        "sold_by_rarity": auto_sell_stats["sold_by_rarity"]
+                    })
+                else:
+                    granted_rewards.append({
+                        "type": "coins",
+                        "quantity": aggregated_rewards["coins"]
+                    })
+                    virtual_item = type('obj', (object,), {
+                        'gacha_pool_id': 0,
+                        'item_type': 'coins',
+                        'item_id': 0,
+                        'quantity': aggregated_rewards["coins"]
+                    })
+                    self._create_log_record(log_records, user_id, virtual_item, f"{aggregated_rewards['coins']} 金币", 1)
 
             # 批量授予称号
             for title_id in aggregated_rewards["titles"]:
@@ -309,7 +396,6 @@ class GachaService:
                         "id": title_id,
                         "name": title_template.name
                     })
-                    # 创建虚拟item用于日志记录
                     virtual_item = type('obj', (object,), {
                         'gacha_pool_id': 0,
                         'item_type': 'titles',
@@ -325,18 +411,50 @@ class GachaService:
                 db_operations_count += len(log_records)
 
             logger.info(f"用户 {user_id} 完成 {len(draw_results)} 次抽奖")
+            if auto_sell_low_rarity and auto_sell_stats["sold_items_count"] > 0:
+                logger.info(f"自动卖出 {auto_sell_stats['sold_items_count']} 件低稀有度物品，获得 {auto_sell_stats['sold_coins_total']} 金币")
             logger.info(f"批量插入优化: 实际执行 {db_operations_count} 次数据库操作")
-            traditional_count = self._estimate_traditional_db_operations(aggregated_rewards)
-            logger.info(f"性能提升: 传统方式需要 {traditional_count} 次操作，优化后节省了 {traditional_count - db_operations_count} 次操作")
-            if traditional_count > 0:
-                improvement = (traditional_count - db_operations_count) / traditional_count * 100
-                logger.info(f"性能提升幅度: {improvement:.1f}%")
             
         except Exception as e:
             logger.error(f"批量发放奖励失败: {e}", exc_info=True)
             raise e
             
         return granted_rewards
+
+    def _get_item_rarity(self, item: GachaPoolItem) -> int:
+        """获取物品稀有度"""
+        if item.item_type == "rod":
+            template = self.item_template_repo.get_rod_by_id(item.item_id)
+            return template.rarity if template else 1
+        elif item.item_type == "accessory":
+            template = self.item_template_repo.get_accessory_by_id(item.item_id)
+            return template.rarity if template else 1
+        elif item.item_type == "bait":
+            template = self.item_template_repo.get_bait_by_id(item.item_id)
+            return template.rarity if template else 1
+        elif item.item_type == "coins":
+            return 1  # 金币视为1星
+        elif item.item_type == "titles":
+            return 5  # 称号视为5星，不会被卖出
+        return 1
+
+    def _get_item_name(self, item: GachaPoolItem) -> str:
+        """获取物品名称"""
+        if item.item_type == "rod":
+            template = self.item_template_repo.get_rod_by_id(item.item_id)
+            return template.name if template else "未知鱼竿"
+        elif item.item_type == "accessory":
+            template = self.item_template_repo.get_accessory_by_id(item.item_id)
+            return template.name if template else "未知饰品"
+        elif item.item_type == "bait":
+            template = self.item_template_repo.get_bait_by_id(item.item_id)
+            return template.name if template else "未知鱼饵"
+        elif item.item_type == "coins":
+            return f"{item.quantity} 金币"
+        elif item.item_type == "titles":
+            template = self.item_template_repo.get_title_by_id(item.item_id)
+            return template.name if template else "未知称号"
+        return "未知物品"
 
     def _create_log_record(self, log_records: List[GachaRecord], user_id: str, item, item_name: str, item_rarity: int):
         """创建日志记录"""

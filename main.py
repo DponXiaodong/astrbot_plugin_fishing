@@ -54,6 +54,8 @@ class FishingPlugin(Star):
         self.min_rate = config.get("min_rate", 0.05)  # 最小税率
         self.area2num = config.get("area2num", 2000)
         self.area3num = config.get("area3num", 500)
+        self.ten_thousand_gacha_lock = False
+        self.ten_thousand_gacha_user = None  # 记录当前进行万连的用户
         self.game_config = {
             "fishing": {"cost": config.get("fish_cost", 10), "cooldown_seconds": config.get("fish_cooldown_seconds", 180)},
             "steal": {"cooldown_seconds": config.get("steal_cooldown_seconds", 14400)},
@@ -127,8 +129,15 @@ class FishingPlugin(Star):
         self.shop_service = ShopService(self.item_template_repo, self.inventory_repo, self.user_repo)
         self.market_service = MarketService(self.market_repo, self.inventory_repo, self.user_repo, self.log_repo,
                                             self.item_template_repo, self.game_config)
-        self.gacha_service = GachaService(self.gacha_repo, self.user_repo, self.inventory_repo, self.item_template_repo,
-                                          self.log_repo, self.achievement_repo)
+        self.gacha_service = GachaService(
+    self.gacha_repo, 
+    self.user_repo, 
+    self.inventory_repo, 
+    self.item_template_repo,
+    self.log_repo, 
+    self.achievement_repo,
+    self.game_config  # 传入配置
+)
         self.game_mechanics_service = GameMechanicsService(self.user_repo, self.log_repo, self.inventory_repo,
                                                            self.item_template_repo, self.game_config)
         self.achievement_service = AchievementService(self.achievement_repo, self.user_repo, self.inventory_repo,
@@ -961,6 +970,7 @@ class FishingPlugin(Star):
         else:
             yield event.plain_result("❌ 出错啦！请稍后再试。")
 
+    # 修改十连抽卡方法
     @filter.command("十连")
     async def ten_gacha(self, event: AstrMessageEvent):
         """十连抽卡"""
@@ -979,13 +989,34 @@ class FishingPlugin(Star):
             if result["success"]:
                 items = result.get("results", [])
                 message = f"🎉 十连抽卡成功！您抽到了 {len(items)} 件物品：\n"
+                
+                # 统计和分类显示
+                kept_items = []
+                sold_items_summary = None
+                
                 for item in items:
-                    # 构造输出信息
                     if item.get("type") == "coins":
-                        # 金币类型的物品
                         message += f"⭐ {item['quantity']} 金币！\n"
+                    elif item.get("type") == "sold_coins_summary":
+                        sold_items_summary = item
+                    elif item.get("type", "").startswith("sold_"):
+                        # 跳过单个卖出物品的显示，只在汇总中显示
+                        continue
                     else:
+                        kept_items.append(item)
                         message += f"{'⭐' * item.get('rarity', 1)} {item['name']}\n"
+                
+                # 显示自动卖出汇总
+                if sold_items_summary:
+                    message += f"\n💰 自动卖出物品汇总：\n"
+                    message += f"   卖出数量：{sold_items_summary['sold_items_count']} 件\n"
+                    sold_by_rarity = sold_items_summary['sold_by_rarity']
+                    for rarity in [1, 2, 3]:
+                        if sold_by_rarity.get(rarity, 0) > 0:
+                            message += f"   {'⭐' * rarity}：{sold_by_rarity[rarity]} 件\n"
+                    message += f"   获得金币：{sold_items_summary['quantity']} 💰\n"
+                    message += f"\n📝 四星以下物品已自动卖出换取金币"
+                
                 yield event.plain_result(message)
             else:
                 yield event.plain_result(f"❌ 抽卡失败：{result['message']}")
@@ -994,7 +1025,7 @@ class FishingPlugin(Star):
 
     @filter.command("百连")
     async def hundred_gacha(self, event: AstrMessageEvent):
-        """百连抽卡 - 使用内存聚合优化，支持大批量抽奖"""
+        """百连抽卡 - 使用内存聚合优化，支持大批量抽奖，自动卖出四星以下物品"""
         user_id = event.get_sender_id()
         args = event.message_str.split(" ")
         if len(args) < 2:
@@ -1024,7 +1055,7 @@ class FishingPlugin(Star):
             return
         
         # 提示用户即将进行的操作
-        yield event.plain_result(f"🚀 正在进行百连抽卡，预计花费 {total_cost} 金币...\n⏳ 请稍等，正在使用处理...")
+        yield event.plain_result(f"🚀 正在进行百连抽卡，预计花费 {total_cost} 金币...\n⏳ 请稍等，正在处理...\n📝 四星以下物品将自动卖出换取金币")
         
         result = self.gacha_service.perform_draw(user_id, pool_id, num_draws=100)
         if result:
@@ -1035,10 +1066,16 @@ class FishingPlugin(Star):
                 rarity_count = {1: 0, 2: 0, 3: 0, 4: 0, 5: 0}
                 coins_total = 0
                 special_items = []
+                sold_items_summary = None
                 
                 for item in items:
                     if item.get("type") == "coins":
                         coins_total += item['quantity']
+                    elif item.get("type") == "sold_coins_summary":
+                        sold_items_summary = item
+                    elif item.get("type", "").startswith("sold_"):
+                        # 自动卖出的物品不显示在特殊物品中
+                        continue
                     else:
                         rarity = item.get('rarity', 1)
                         rarity_count[rarity] += 1
@@ -1048,16 +1085,32 @@ class FishingPlugin(Star):
                             special_items.append(f"{'⭐' * rarity} {item['name']}")
                 
                 # 构建消息
-                message = f"🎊 百连抽卡完成！总计获得 {len(items)} 件物品：\n\n"
+                message = f"🎊 百连抽卡完成！\n\n"
                 
-                # 稀有度统计
-                message += "📊 【稀有度统计】\n"
+                # 稀有度统计（只显示保留的物品）
+                message += "📊 【保留物品统计】\n"
+                kept_items_count = 0
                 for rarity in range(5, 0, -1):
                     if rarity_count[rarity] > 0:
                         message += f"{'⭐' * rarity}：{rarity_count[rarity]} 件\n"
+                        kept_items_count += rarity_count[rarity]
                 
                 if coins_total > 0:
-                    message += f"💰 金币：{coins_total}\n"
+                    normal_coins = coins_total
+                    if sold_items_summary:
+                        normal_coins = coins_total - sold_items_summary['quantity']
+                    if normal_coins > 0:
+                        message += f"💰 直接金币：{normal_coins}\n"
+                
+                # 显示自动卖出汇总
+                if sold_items_summary:
+                    message += f"\n💸 【自动卖出汇总】\n"
+                    message += f"卖出数量：{sold_items_summary['sold_items_count']} 件\n"
+                    sold_by_rarity = sold_items_summary['sold_by_rarity']
+                    for rarity in [1, 2, 3]:
+                        if sold_by_rarity.get(rarity, 0) > 0:
+                            message += f"{'⭐' * rarity}：{sold_by_rarity[rarity]} 件\n"
+                    message += f"获得金币：{sold_items_summary['quantity']} 💰\n"
                 
                 # 显示4星及以上物品
                 if special_items:
@@ -1067,11 +1120,302 @@ class FishingPlugin(Star):
                     if len(special_items) > 10:
                         message += f"...还有{len(special_items)-10}件珍稀物品\n"
                 
+                total_items = kept_items_count + (sold_items_summary['sold_items_count'] if sold_items_summary else 0)
+                message += f"\n📋 总计：保留 {kept_items_count} 件，卖出 {sold_items_summary['sold_items_count'] if sold_items_summary else 0} 件"
+                
                 yield event.plain_result(message)
             else:
                 yield event.plain_result(f"❌ 抽卡失败：{result['message']}")
         else:
             yield event.plain_result("❌ 出错啦！请稍后再试。")
+        
+    @filter.command("万连")
+    async def ten_thousand_gacha(self, event: AstrMessageEvent):
+        """万连抽卡 - 终极批量抽奖，全面测试系统性能"""
+        user_id = event.get_sender_id()
+        
+        # 检查万连锁
+        if self.ten_thousand_gacha_lock:
+            current_user = self.ten_thousand_gacha_user
+            if current_user == user_id:
+                yield event.plain_result("❌ 您已经在进行万连，请等待当前万连完成")
+            else:
+                user = self.user_repo.get_by_id(current_user) if current_user else None
+                nickname = user.nickname if user else "未知用户"
+                yield event.plain_result(f"⏳ 系统正忙：{nickname} 正在进行万连\n"
+                                    f"为保证系统稳定，同一时间只能有一人万连\n"
+                                    f"请稍后再试")
+            return
+        
+        args = event.message_str.split(" ")
+        user_id = event.get_sender_id()
+        args = event.message_str.split(" ")
+        if len(args) < 2:
+            yield event.plain_result("❌ 请指定要进行万连抽卡的抽奖池 ID，例如：/万连 1")
+            return
+        pool_id = args[1]
+        if not pool_id.isdigit():
+            yield event.plain_result("❌ 抽奖池 ID 必须是数字，请检查后重试。")
+            return
+        
+        pool_id = int(pool_id)
+        
+        # 获取抽奖池信息
+        pool_info = self.gacha_service.gacha_repo.get_pool_by_id(pool_id)
+        if not pool_info:
+            yield event.plain_result("❌ 指定的抽奖池不存在。")
+            return
+            
+        total_cost = pool_info.cost_coins * 10000
+        user = self.user_repo.get_by_id(user_id)
+        if not user:
+            yield event.plain_result("❌ 您还没有注册，请先使用 /注册 命令注册。")
+            return
+            
+        # 万连的金币要求很高，给出详细的提示
+        if not user.can_afford(total_cost):
+            yield event.plain_result(f"💰 金币严重不足！\n"
+                                    f"万连需要：{total_cost:,} 金币\n"
+                                    f"您当前拥有：{user.coins:,} 金币\n"
+                                    f"还需要：{total_cost - user.coins:,} 金币")
+            return
+        
+        # 万连风险提示和二次确认
+        yield event.plain_result(f"⚠️ 【万连抽卡风险提示】\n"
+                                f"💸 花费：{total_cost:,} 金币\n"
+                                f"⏱️ 预计处理时间：10-30秒\n"
+                                f"📦 将获得大量物品，四星以下自动卖出\n"
+                                f"🔄 正在启动万连系统...")
+        
+        # 开始计时
+        import time
+        start_time = time.time()
+        
+        # 分批处理以避免内存问题（可选，如果单次10000有问题的话）
+        batch_size = 2000  # 每批2000次
+        total_results = []
+        processed = 0
+        
+        try:
+            # 设置万连锁
+            self.ten_thousand_gacha_lock = True
+            self.ten_thousand_gacha_user = user_id
+            logger.info(f"用户 {user_id} 开始万连，已设置系统锁")
+            
+            # 先扣除所有费用
+            user.coins -= total_cost
+            self.user_repo.update(user)
+            
+            # 分5批处理
+            failed_at_batch = -1
+            for batch in range(5):
+                batch_result = self.gacha_service.perform_draw(user_id, pool_id, num_draws=batch_size)
+                if batch_result and batch_result["success"]:
+                    total_results.extend(batch_result.get("results", []))
+                    processed += batch_size
+                    
+                    # 进度提示
+                    if batch < 4:  # 不在最后一批显示进度
+                        progress = ((batch + 1) / 5) * 100
+                        yield event.plain_result(f"🔄 处理进度：{progress:.0f}% ({processed:,}/10,000)")
+                else:
+                    # 记录失败的批次
+                    failed_at_batch = batch + 1
+                    # 如果某批失败，退还剩余费用
+                    remaining_batches = 5 - batch
+                    remaining_cost = remaining_batches * batch_size * pool_info.cost_coins
+                    if remaining_cost > 0:
+                        user.coins += remaining_cost
+                        self.user_repo.update(user)
+                    break  # 跳出循环，但继续处理已完成的结果
+            
+            # 处理完成，统计结果
+            end_time = time.time()
+            process_time = end_time - start_time
+            
+            # 判断是否完全完成
+            is_partial = failed_at_batch > 0
+            actual_draws = processed
+            actual_cost = actual_draws * pool_info.cost_coins
+            refunded_cost = total_cost - actual_cost if is_partial else 0
+            
+            # 详细统计
+            rarity_count = {1: 0, 2: 0, 3: 0, 4: 0, 5: 0}
+            coins_from_draws = 0
+            special_items = []
+            ultra_rare_items = []  # 5星物品单独统计
+            sold_items_total = 0
+            sold_coins_total = 0
+            sold_by_rarity = {1: 0, 2: 0, 3: 0}
+            
+            for item in total_results:
+                if item.get("type") == "coins":
+                    coins_from_draws += item['quantity']
+                elif item.get("type") == "sold_coins_summary":
+                    sold_items_total += item['sold_items_count']
+                    sold_coins_total += item['quantity']
+                    for rarity in [1, 2, 3]:
+                        sold_by_rarity[rarity] += item['sold_by_rarity'].get(rarity, 0)
+                elif item.get("type", "").startswith("sold_"):
+                    continue
+                else:
+                    rarity = item.get('rarity', 1)
+                    rarity_count[rarity] += 1
+                    
+                    # 收集特殊物品
+                    if rarity == 5:
+                        ultra_rare_items.append(f"⭐⭐⭐⭐⭐ {item['name']}")
+                    elif rarity == 4:
+                        special_items.append(f"⭐⭐⭐⭐ {item['name']}")
+            
+            # 构建详细结果消息
+            if is_partial:
+                message = f"⚠️ 万连部分完成（第{failed_at_batch}批出错）\n"
+                message += f"✅ 已完成：{actual_draws:,}/10,000 抽\n"
+                message += f"💰 已退还：{refunded_cost:,} 金币\n"
+            else:
+                message = f"🎊 万连抽卡完成！\n"
+            
+            message += f"⏱️ 处理时间：{process_time:.1f}秒\n\n"
+            
+            # 核心统计
+            kept_items = sum(rarity_count.values())
+            message += f"📊 【核心统计】\n"
+            message += f"🎯 实际抽数：{actual_draws:,} 抽\n"
+            message += f"💎 保留物品：{kept_items:,} 件\n"
+            message += f"💸 卖出物品：{sold_items_total:,} 件\n"
+            message += f"💰 总获得金币：{coins_from_draws + sold_coins_total:,}\n"
+            if is_partial:
+                message += f"💵 实际花费：{actual_cost:,} 金币\n"
+            message += "\n"
+            
+            # 保留物品详情（基于实际抽奖数计算百分比）
+            if kept_items > 0:
+                message += f"🏆 【保留物品详情】\n"
+                for rarity in range(5, 0, -1):
+                    if rarity_count[rarity] > 0:
+                        percentage = (rarity_count[rarity] / actual_draws) * 100
+                        message += f"{'⭐' * rarity}：{rarity_count[rarity]:,} 件 ({percentage:.2f}%)\n"
+            
+            # 卖出汇总
+            if sold_items_total > 0:
+                message += f"\n💸 【自动卖出详情】\n"
+                total_sold_percentage = (sold_items_total / actual_draws) * 100
+                message += f"卖出总数：{sold_items_total:,} 件 ({total_sold_percentage:.1f}%)\n"
+                for rarity in [1, 2, 3]:
+                    if sold_by_rarity[rarity] > 0:
+                        percentage = (sold_by_rarity[rarity] / actual_draws) * 100
+                        message += f"{'⭐' * rarity}：{sold_by_rarity[rarity]:,} 件 ({percentage:.2f}%)\n"
+                message += f"获得金币：{sold_coins_total:,} 💰\n"
+            
+            # 5星物品展示（最珍贵的）
+            if ultra_rare_items:
+                message += f"\n🌟 【传说物品 ({len(ultra_rare_items)}件)】\n"
+                for item in ultra_rare_items[:15]:  # 最多显示15个5星
+                    message += f"{item}\n"
+                if len(ultra_rare_items) > 15:
+                    message += f"...还有{len(ultra_rare_items)-15}件传说物品\n"
+            
+            # 4星物品概览（数量较多时只显示总数）
+            if rarity_count[4] > 0:
+                message += f"\n⭐⭐⭐⭐ 【稀有物品】：{rarity_count[4]:,} 件\n"
+                if rarity_count[4] <= 20:  # 少于20件时详细显示
+                    for item in special_items[:rarity_count[4]]:
+                        message += f"{item}\n"
+            
+            # 性能统计
+            # message += f"\n📈 【性能统计】\n"
+            # message += f"处理速度：{actual_draws/process_time:.0f} 抽/秒\n"
+            # message += f"命中率：保留{(kept_items/actual_draws)*100:.1f}% | 卖出{(sold_items_total/actual_draws)*100:.1f}%\n"
+            
+            # 投资回报分析
+            # if sold_coins_total > 0:
+            #     total_return = coins_from_draws + sold_coins_total
+            #     roi_percentage = ((total_return - actual_cost) / actual_cost) * 100
+            #     message += f"📊 投资回报：{roi_percentage:+.1f}% ({total_return:,} vs {actual_cost:,})\n"
+            
+            # 如果是部分完成，添加提醒信息
+            if is_partial:
+                message += f"\n⚠️ 【重要提醒】\n"
+                message += f"由于第{failed_at_batch}批处理出错，万连提前结束\n"
+                message += f"已退还剩余 {refunded_cost:,} 金币到您的账户\n"
+                message += f"您可以稍后重试或联系管理员查看问题\n"
+            
+            yield event.plain_result(message)
+            
+            # 释放万连锁
+            self.ten_thousand_gacha_lock = False
+            self.ten_thousand_gacha_user = None
+            logger.info(f"用户 {user_id} 万连完成，已释放系统锁")
+            
+            # 如果有很多5星物品，单独发送详细列表（只在有结果时发送）
+            if len(ultra_rare_items) > 15:
+                detail_message = f"🌟 【完整传说物品列表】({len(ultra_rare_items)}件)\n"
+                for i, item in enumerate(ultra_rare_items, 1):
+                    detail_message += f"{i}. {item}\n"
+                    if i % 20 == 0 and i < len(ultra_rare_items):
+                        detail_message += f"\n--- 第{i//20}批 ---\n"
+                
+                # 如果列表太长，使用转发消息
+                if len(detail_message) > 1000:
+                    async for result in self._send_long_message(event, detail_message, "万连传说物品详情"):
+                        yield result
+                else:
+                    yield event.plain_result(detail_message)
+            
+        except Exception as e:
+            logger.error(f"万连抽卡出错: {e}", exc_info=True)
+            # 出错时尝试退还费用，但要考虑可能已经处理了部分批次
+            try:
+                # 如果还没开始处理或者在第一批就出错，全额退还
+                if processed == 0:
+                    user = self.user_repo.get_by_id(user_id)
+                    user.coins += total_cost  # 全额退还
+                    self.user_repo.update(user)
+                    yield event.plain_result(f"❌ 万连启动失败，已全额退还 {total_cost:,} 金币：{str(e)}")
+                else:
+                    # 如果已经处理了部分，只退还剩余部分
+                    actual_cost = processed * pool_info.cost_coins
+                    remaining_cost = total_cost - actual_cost
+                    
+                    if remaining_cost > 0:
+                        user = self.user_repo.get_by_id(user_id)
+                        user.coins += remaining_cost
+                        self.user_repo.update(user)
+                    
+                    # 显示部分完成的统计（简化版）
+                    if total_results:
+                        kept_count = 0
+                        sold_count = 0
+                        sold_coins = 0
+                        for item in total_results:
+                            if item.get("type") == "sold_coins_summary":
+                                sold_count += item['sold_items_count']
+                                sold_coins += item['quantity']
+                            elif not item.get("type", "").startswith("sold_"):
+                                kept_count += 1
+                        
+                        yield event.plain_result(f"⚠️ 万连异常中止，但已完成 {processed:,} 抽\n"
+                                            f"📦 获得物品：{kept_count} 件保留，{sold_count} 件卖出\n"
+                                            f"💰 获得金币：{sold_coins:,}\n"
+                                            f"💵 已退还剩余费用：{remaining_cost:,} 金币\n"
+                                            f"❌ 错误信息：{str(e)}")
+                    else:
+                        yield event.plain_result(f"❌ 万连在处理 {processed:,} 抽后出错\n"
+                                            f"💵 已退还剩余 {remaining_cost:,} 金币\n"
+                                            f"请联系管理员：{str(e)}")
+            
+            except Exception as refund_error:
+                yield event.plain_result(f"❌ 万连处理出错且退款失败！\n"
+                                    f"已处理：{processed:,} 抽\n"
+                                    f"原错误：{str(e)}\n"
+                                    f"退款错误：{str(refund_error)}\n"
+                                    f"请立即联系管理员处理")
+            finally:
+                # 确保无论如何都释放锁
+                self.ten_thousand_gacha_lock = False
+                self.ten_thousand_gacha_user = None
+                logger.info(f"用户 {user_id} 万连异常结束，已释放系统锁")
 
     @filter.command("查看卡池")
     async def view_gacha_pool(self, event: AstrMessageEvent):
