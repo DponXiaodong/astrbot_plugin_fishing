@@ -101,7 +101,7 @@ class GachaService:
             })
         return {"success": True, "pool": pool, "probabilities": probabilities}
 
-    def perform_draw(self, user_id: str, pool_id: int, num_draws: int = 1) -> Dict[str, Any]:
+    def perform_draw(self, user_id: str, pool_id: int, num_draws: int = 1, skip_cost: bool = False) -> Dict[str, Any]:
         """
         实现单抽和多连抽的核心逻辑，使用内存聚合 + 批量写入优化。
         十连以上自动卖出四星以下物品。
@@ -122,9 +122,13 @@ class GachaService:
         if not pool or not pool.items:
             return {"success": False, "message": "卡池不存在或卡池为空"}
 
-        total_cost = pool.cost_coins * num_draws
-        if not user.can_afford(total_cost):
-            return {"success": False, "message": f"金币不足，需要 {total_cost} 金币"}
+        if not skip_cost:
+            total_cost = pool.cost_coins * num_draws
+            if not user.can_afford(total_cost):
+                return {"success": False, "message": f"金币不足，需要 {total_cost} 金币"}
+            # 2. 扣除费用
+            user.coins -= total_cost
+            self.user_repo.update(user)
 
         # 1. 执行抽卡 - 在内存中收集所有结果
         draw_results = []
@@ -135,10 +139,6 @@ class GachaService:
 
         if not draw_results:
             return {"success": False, "message": "抽卡失败，请检查卡池配置"}
-
-        # 2. 扣除费用
-        user.coins -= total_cost
-        self.user_repo.update(user)
 
         # 3. 内存聚合 + 批量发放奖励
         # 十连以上启用自动卖出四星以下物品
