@@ -2,6 +2,7 @@ import os
 import asyncio
 from hypercorn.config import Config
 from hypercorn.asyncio import serve
+from collections import defaultdict
 
 from astrbot.api import logger, AstrBotConfig
 from astrbot.api.event import filter, AstrMessageEvent
@@ -1023,6 +1024,8 @@ class FishingPlugin(Star):
         else:
             yield event.plain_result("❌ 出错啦！请稍后再试。")
 
+
+    # 1. 修改百连抽卡函数
     @filter.command("百连")
     async def hundred_gacha(self, event: AstrMessageEvent):
         """百连抽卡 - 使用内存聚合优化，支持大批量抽奖，自动卖出四星以下物品"""
@@ -1062,8 +1065,8 @@ class FishingPlugin(Star):
             if result["success"]:
                 items = result.get("results", [])
                 
-                # 统计结果
-                rarity_count = {1: 0, 2: 0, 3: 0, 4: 0, 5: 0}
+                # 统计结果 - 使用 defaultdict 自动处理任何稀有度
+                rarity_count = defaultdict(int)
                 coins_total = 0
                 special_items = []
                 sold_items_summary = None
@@ -1090,7 +1093,7 @@ class FishingPlugin(Star):
                 # 稀有度统计（只显示保留的物品）
                 message += "📊 【保留物品统计】\n"
                 kept_items_count = 0
-                for rarity in range(5, 0, -1):
+                for rarity in sorted(rarity_count.keys(), reverse=True):
                     if rarity_count[rarity] > 0:
                         message += f"{'⭐' * rarity}：{rarity_count[rarity]} 件\n"
                         kept_items_count += rarity_count[rarity]
@@ -1128,7 +1131,8 @@ class FishingPlugin(Star):
                 yield event.plain_result(f"❌ 抽卡失败：{result['message']}")
         else:
             yield event.plain_result("❌ 出错啦！请稍后再试。")
-        
+
+    # 2. 修改千连抽卡函数
     @filter.command("千连")
     async def thousand_gacha(self, event: AstrMessageEvent):
         """千连抽卡 - 大批量抽奖，自动卖出四星以下物品"""
@@ -1168,11 +1172,11 @@ class FishingPlugin(Star):
             if result["success"]:
                 items = result.get("results", [])
                 
-                # 统计结果
-                rarity_count = {1: 0, 2: 0, 3: 0, 4: 0, 5: 0}
+                # 统计结果 - 使用 defaultdict 自动处理任何稀有度
+                rarity_count = defaultdict(int)
                 coins_total = 0
                 special_items = []  # 4星物品
-                ultra_rare_items = []  # 5星物品
+                ultra_rare_items = []  # 5星以上物品
                 sold_items_summary = None
                 
                 for item in items:
@@ -1188,8 +1192,8 @@ class FishingPlugin(Star):
                         rarity_count[rarity] += 1
                         
                         # 收集特殊物品
-                        if rarity == 5:
-                            ultra_rare_items.append(f"⭐⭐⭐⭐⭐ {item['name']}")
+                        if rarity >= 5:
+                            ultra_rare_items.append(f"{'⭐' * rarity} {item['name']}")
                         elif rarity == 4:
                             special_items.append(f"⭐⭐⭐⭐ {item['name']}")
                 
@@ -1199,7 +1203,7 @@ class FishingPlugin(Star):
                 # 稀有度统计（只显示保留的物品）
                 message += "📊 【保留物品统计】\n"
                 kept_items_count = 0
-                for rarity in range(5, 0, -1):
+                for rarity in sorted(rarity_count.keys(), reverse=True):
                     if rarity_count[rarity] > 0:
                         percentage = (rarity_count[rarity] / 1000) * 100
                         message += f"{'⭐' * rarity}：{rarity_count[rarity]:,} 件 ({percentage:.1f}%)\n"
@@ -1223,10 +1227,10 @@ class FishingPlugin(Star):
                             message += f"{'⭐' * rarity}：{sold_by_rarity[rarity]:,} 件 ({percentage:.1f}%)\n"
                     message += f"获得金币：{sold_items_summary['quantity']:,} 💰\n"
                 
-                # 显示5星物品（最珍贵的）
+                # 显示5星以上物品（最珍贵的）
                 if ultra_rare_items:
                     message += f"\n🌟 【传说物品 ({len(ultra_rare_items)}件)】\n"
-                    for item in ultra_rare_items[:10]:  # 最多显示10个5星
+                    for item in ultra_rare_items[:10]:  # 最多显示10个5星以上
                         message += f"{item}\n"
                     if len(ultra_rare_items) > 10:
                         message += f"...还有{len(ultra_rare_items)-10}件传说物品\n"
@@ -1248,32 +1252,13 @@ class FishingPlugin(Star):
                 total_sold = sold_items_summary['sold_items_count'] if sold_items_summary else 0
                 message += f"\n📋 总计：保留 {total_kept:,} 件，卖出 {total_sold:,} 件"
                 
-                # 投资回报分析
-                if sold_items_summary:
-                    total_return = coins_total
-                    roi_percentage = ((total_return - total_cost) / total_cost) * 100
-                    # if roi_percentage > 0:
-                    #     message += f"\n📈 投资回报：+{roi_percentage:.1f}% (盈利 {total_return - total_cost:,} 金币)"
-                    # else:
-                    #     message += f"\n📉 投资回报：{roi_percentage:.1f}% (亏损 {abs(total_return - total_cost):,} 金币)"
-                
                 yield event.plain_result(message)
-                
-                # 如果5星物品较多，发送详细列表
-                if len(ultra_rare_items) > 10:
-                    detail_message = f"🌟 【完整传说物品列表】({len(ultra_rare_items)}件)\n"
-                    for i, item in enumerate(ultra_rare_items, 1):
-                        detail_message += f"{i}. {item}\n"
-                    
-                    # 使用长消息处理方法
-                    async for result in self._send_long_message(event, detail_message, "千连传说物品详情"):
-                        yield result
                 
             else:
                 yield event.plain_result(f"❌ 抽卡失败：{result['message']}")
         else:
-            yield event.plain_result("❌ 出错啦！请稍后再试。")    
-    
+            yield event.plain_result("❌ 出错啦！请稍后再试。")
+        
     @filter.command("万连")
     async def ten_thousand_gacha(self, event: AstrMessageEvent):
         """万连抽卡 - 终极批量抽奖，全面测试系统性能"""
@@ -1381,11 +1366,12 @@ class FishingPlugin(Star):
             actual_cost = actual_draws * pool_info.cost_coins
             refunded_cost = total_cost - actual_cost if is_partial else 0
             
-            # 详细统计
-            rarity_count = {1: 0, 2: 0, 3: 0, 4: 0, 5: 0}
+            # 详细统计 - 使用defaultdict处理任意稀有度
+            rarity_count = defaultdict(int)
             coins_from_draws = 0
-            special_items = []
-            ultra_rare_items = []  # 5星物品单独统计
+            special_items = []        # 4星物品
+            five_star_items = []      # 5星物品  
+            ultra_rare_items = []     # 6星以上物品
             sold_items_total = 0
             sold_coins_total = 0
             sold_by_rarity = {1: 0, 2: 0, 3: 0}
@@ -1405,9 +1391,11 @@ class FishingPlugin(Star):
                     rarity_count[rarity] += 1
                     
                     # 收集特殊物品
-                    if rarity == 5:
-                        ultra_rare_items.append(f"⭐⭐⭐⭐⭐ {item['name']}")
-                    elif rarity == 4:
+                    if rarity >= 6:  # 6星以上为终极稀有
+                        ultra_rare_items.append(f"{'⭐' * rarity} {item['name']}")
+                    elif rarity == 5:  # 5星为传说物品
+                        five_star_items.append(f"⭐⭐⭐⭐⭐ {item['name']}")
+                    elif rarity == 4:  # 4星为稀有物品
                         special_items.append(f"⭐⭐⭐⭐ {item['name']}")
             
             # 构建详细结果消息
@@ -1434,7 +1422,7 @@ class FishingPlugin(Star):
             # 保留物品详情（基于实际抽奖数计算百分比）
             if kept_items > 0:
                 message += f"🏆 【保留物品详情】\n"
-                for rarity in range(5, 0, -1):
+                for rarity in sorted(rarity_count.keys(), reverse=True):
                     if rarity_count[rarity] > 0:
                         percentage = (rarity_count[rarity] / actual_draws) * 100
                         message += f"{'⭐' * rarity}：{rarity_count[rarity]:,} 件 ({percentage:.2f}%)\n"
@@ -1450,31 +1438,32 @@ class FishingPlugin(Star):
                         message += f"{'⭐' * rarity}：{sold_by_rarity[rarity]:,} 件 ({percentage:.2f}%)\n"
                 message += f"获得金币：{sold_coins_total:,} 💰\n"
             
-            # 5星物品展示（最珍贵的）
+            # 6星以上物品展示（最珍贵的）
             if ultra_rare_items:
-                message += f"\n🌟 【传说物品 ({len(ultra_rare_items)}件)】\n"
-                for item in ultra_rare_items[:15]:  # 最多显示15个5星
+                message += f"\n💎 【终极稀有物品 ({len(ultra_rare_items)}件)】\n"
+                for item in ultra_rare_items:  # 6星以上全部显示
+                    message += f"✨ {item}\n"
+
+            # 5星物品展示
+            if five_star_items:
+                message += f"\n🌟 【传说物品 ({len(five_star_items)}件)】\n"
+                for item in five_star_items[:15]:  # 最多显示15个5星
                     message += f"{item}\n"
-                if len(ultra_rare_items) > 15:
-                    message += f"...还有{len(ultra_rare_items)-15}件传说物品\n"
+                if len(five_star_items) > 15:
+                    message += f"...还有{len(five_star_items)-15}件传说物品\n"
             
             # 4星物品概览（数量较多时只显示总数）
-            if rarity_count[4] > 0:
-                message += f"\n⭐⭐⭐⭐ 【稀有物品】：{rarity_count[4]:,} 件\n"
-                if rarity_count[4] <= 20:  # 少于20件时详细显示
-                    for item in special_items[:rarity_count[4]]:
+            four_star_count = rarity_count.get(4, 0)
+            if four_star_count > 0:
+                # message += f"\n⭐⭐⭐⭐ 【稀有物品】：{four_star_count:,} 件\n"
+                if four_star_count <= 20:  # 少于20件时详细显示
+                    for item in special_items:
                         message += f"{item}\n"
-            
-            # 性能统计
-            # message += f"\n📈 【性能统计】\n"
-            # message += f"处理速度：{actual_draws/process_time:.0f} 抽/秒\n"
-            # message += f"命中率：保留{(kept_items/actual_draws)*100:.1f}% | 卖出{(sold_items_total/actual_draws)*100:.1f}%\n"
-            
-            # 投资回报分析
-            # if sold_coins_total > 0:
-            #     total_return = coins_from_draws + sold_coins_total
-            #     roi_percentage = ((total_return - actual_cost) / actual_cost) * 100
-            #     message += f"📊 投资回报：{roi_percentage:+.1f}% ({total_return:,} vs {actual_cost:,})\n"
+                else:
+                    # 只显示前20件
+                    for item in special_items[:20]:
+                        message += f"{item}\n"
+                    message += f"...还有{len(special_items)-20}件稀有物品\n"
             
             # 如果是部分完成，添加提醒信息
             if is_partial:
@@ -1490,12 +1479,12 @@ class FishingPlugin(Star):
             self.ten_thousand_gacha_user = None
             logger.info(f"用户 {user_id} 万连完成，已释放系统锁")
             
-            # 如果有很多5星物品，单独发送详细列表（只在有结果时发送）
-            if len(ultra_rare_items) > 15:
-                detail_message = f"🌟 【完整传说物品列表】({len(ultra_rare_items)}件)\n"
-                for i, item in enumerate(ultra_rare_items, 1):
+            # 如果有很多5星物品，单独发送详细列表
+            if len(five_star_items) > 15:
+                detail_message = f"🌟 【完整传说物品列表】({len(five_star_items)}件)\n"
+                for i, item in enumerate(five_star_items, 1):
                     detail_message += f"{i}. {item}\n"
-                    if i % 20 == 0 and i < len(ultra_rare_items):
+                    if i % 20 == 0 and i < len(five_star_items):
                         detail_message += f"\n--- 第{i//20}批 ---\n"
                 
                 # 如果列表太长，使用转发消息
@@ -1504,6 +1493,14 @@ class FishingPlugin(Star):
                         yield result
                 else:
                     yield event.plain_result(detail_message)
+
+            # 如果有6星以上物品，也单独发送详细列表
+            if len(ultra_rare_items) > 0:
+                ultra_detail_message = f"💎 【终极稀有物品完整列表】({len(ultra_rare_items)}件)\n"
+                for i, item in enumerate(ultra_rare_items, 1):
+                    ultra_detail_message += f"{i}. ✨ {item}\n"
+                
+                yield event.plain_result(ultra_detail_message)
             
         except Exception as e:
             logger.error(f"万连抽卡出错: {e}", exc_info=True)
