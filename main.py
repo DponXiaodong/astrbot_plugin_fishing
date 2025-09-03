@@ -1440,9 +1440,12 @@ class FishingPlugin(Star):
             
             # 6星以上物品展示（最珍贵的）
             if ultra_rare_items:
-                message += f"\n💎 【终极稀有物品 ({len(ultra_rare_items)}件)】\n"
-                for item in ultra_rare_items:  # 6星以上全部显示
-                    message += f"✨ {item}\n"
+                message += f"\n🎆🌟💎✨【！！！传！说！降！临！！！】✨💎🌟🎆\n"
+                message += f"🔥🔥🔥 恭喜您获得 {len(ultra_rare_items)} 件神话级传说物品！🔥🔥🔥\n"
+                message += f"💫━━━━━━━ 众神的馈赠 ━━━━━━━💫\n"
+                for i, item in enumerate(ultra_rare_items, 1):  # 6星以上全部显示
+                    message += f"⚡️👑✨ 第{i}神器：{item} ✨👑⚡️\n"
+                message += f"🎊🎊🎊 传说见证者，您已踏入神之领域！🎊🎊🎊\n"
 
             # 5星物品展示
             if five_star_items:
@@ -1453,17 +1456,17 @@ class FishingPlugin(Star):
                     message += f"...还有{len(five_star_items)-15}件传说物品\n"
             
             # 4星物品概览（数量较多时只显示总数）
-            four_star_count = rarity_count.get(4, 0)
-            if four_star_count > 0:
-                # message += f"\n⭐⭐⭐⭐ 【稀有物品】：{four_star_count:,} 件\n"
-                if four_star_count <= 20:  # 少于20件时详细显示
-                    for item in special_items:
-                        message += f"{item}\n"
-                else:
-                    # 只显示前20件
-                    for item in special_items[:20]:
-                        message += f"{item}\n"
-                    message += f"...还有{len(special_items)-20}件稀有物品\n"
+            # four_star_count = rarity_count.get(4, 0)
+            # if four_star_count > 0:
+            #     message += f"\n⭐⭐⭐⭐ 【稀有物品】：{four_star_count:,} 件\n"
+            #     if four_star_count <= 20:  # 少于20件时详细显示
+            #         for item in special_items:
+            #             message += f"{item}\n"
+            #     else:
+            #         # 只显示前20件
+            #         for item in special_items[:20]:
+            #             message += f"{item}\n"
+            #         message += f"...还有{len(special_items)-20}件稀有物品\n"
             
             # 如果是部分完成，添加提醒信息
             if is_partial:
@@ -1496,9 +1499,14 @@ class FishingPlugin(Star):
 
             # 如果有6星以上物品，也单独发送详细列表
             if len(ultra_rare_items) > 0:
-                ultra_detail_message = f"💎 【终极稀有物品完整列表】({len(ultra_rare_items)}件)\n"
+                ultra_detail_message = f"🌟💎🎆【神话传说完整圣典】🎆💎🌟\n"
+                ultra_detail_message += f"🔮✨ 见证奇迹！您获得了{len(ultra_rare_items)}件传说中的神器！✨🔮\n"
+                ultra_detail_message += f"🏆👑 每一件都足以改变命运！👑🏆\n\n"
                 for i, item in enumerate(ultra_rare_items, 1):
-                    ultra_detail_message += f"{i}. ✨ {item}\n"
+                    ultra_detail_message += f"🎇🔥 【神器 #{i}】🔥🎇\n"
+                    ultra_detail_message += f"⚡️💫 {item} 💫⚡️\n"
+                    ultra_detail_message += f"🌈━━━━━━━━━━━━━━━━━━━🌈\n"
+                ultra_detail_message += f"\n🎊🎉 恭喜传说钓鱼大师！您已成为神话的一部分！🎉🎊"
                 
                 yield event.plain_result(ultra_detail_message)
             
