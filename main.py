@@ -2530,3 +2530,24 @@ class FishingPlugin(Star):
     - 错误数据会被跳过并显示错误信息"""
         
         yield event.plain_result(help_text)
+        
+        
+    @filter.command("出售所有五星鱼竿", alias={"出售全部五星鱼竿", "出售五星鱼竿"})
+    async def sell_all_five_star_rods(self, event: AstrMessageEvent):
+        """出售用户所有五星鱼竿"""
+        user_id = event.get_sender_id()
+        result = self.inventory_service.sell_all_five_star_rods(user_id)
+        if result:
+            yield event.plain_result(result["message"])
+        else:
+            yield event.plain_result("❌ 出错啦！请稍后再试。")
+
+    @filter.command("出售所有五星饰品", alias={"出售全部五星饰品", "出售五星饰品"})
+    async def sell_all_five_star_accessories(self, event: AstrMessageEvent):
+        """出售用户所有五星饰品"""
+        user_id = event.get_sender_id()
+        result = self.inventory_service.sell_all_five_star_accessories(user_id)
+        if result:
+            yield event.plain_result(result["message"])
+        else:
+            yield event.plain_result("❌ 出错啦！请稍后再试。")

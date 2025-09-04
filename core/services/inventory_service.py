@@ -586,3 +586,85 @@ class InventoryService:
 
         # 更新用户信息
         self.user_repo.update(user)
+
+    def sell_all_five_star_rods(self, user_id: str) -> Dict[str, Any]:
+        """
+        向系统出售所有五星鱼竿。
+        """
+        user = self.user_repo.get_by_id(user_id)
+        if not user:
+            return {"success": False, "message": "用户不存在"}
+
+        # 获取用户的鱼竿库存
+        user_rods = self.inventory_repo.get_user_rod_instances(user_id)
+        if not user_rods:
+            return {"success": False, "message": "❌ 你没有可以卖出的鱼竿"}
+
+        total_value = 0
+        five_star_rods = []
+        
+        for rod_instance in user_rods:
+            # 跳过已装备的鱼竿
+            if rod_instance.is_equipped:
+                continue
+                
+            rod_template = self.item_template_repo.get_rod_by_id(rod_instance.rod_id)
+            if rod_template and rod_template.rarity == 5:  # 只处理五星鱼竿
+                sell_prices = self.config.get("sell_prices", {}).get("by_rarity", {})
+                sell_price = sell_prices.get(str(rod_template.rarity), 10000)  # 五星默认10000
+                total_value += sell_price
+                five_star_rods.append(rod_instance)
+
+        if total_value == 0:
+            return {"success": False, "message": "❌ 没有可以卖出的五星鱼竿"}
+
+        # 逐个删除五星鱼竿实例
+        for rod_instance in five_star_rods:
+            self.inventory_repo.delete_rod_instance(rod_instance.rod_instance_id)
+
+        # 更新用户金币
+        user.coins += total_value
+        self.user_repo.update(user)
+        
+        return {"success": True, "message": f"💰 成功卖出 {len(five_star_rods)} 个五星鱼竿，获得 {total_value} 金币"}
+
+    def sell_all_five_star_accessories(self, user_id: str) -> Dict[str, Any]:
+        """
+        向系统出售所有五星饰品。
+        """
+        user = self.user_repo.get_by_id(user_id)
+        if not user:
+            return {"success": False, "message": "用户不存在"}
+
+        # 获取用户的饰品库存
+        user_accessories = self.inventory_repo.get_user_accessory_instances(user_id)
+        if not user_accessories:
+            return {"success": False, "message": "❌ 你没有可以卖出的饰品"}
+
+        total_value = 0
+        five_star_accessories = []
+
+        for accessory_instance in user_accessories:
+            # 跳过已装备的饰品
+            if accessory_instance.is_equipped:
+                continue
+                
+            accessory_template = self.item_template_repo.get_accessory_by_id(accessory_instance.accessory_id)
+            if accessory_template and accessory_template.rarity == 5:  # 只处理五星饰品
+                sell_prices = self.config.get("sell_prices", {}).get("by_rarity", {})
+                sell_price = sell_prices.get(str(accessory_template.rarity), 10000)  # 五星默认10000
+                total_value += sell_price
+                five_star_accessories.append(accessory_instance)
+
+        if total_value == 0:
+            return {"success": False, "message": "❌ 没有可以卖出的五星饰品"}
+
+        # 逐个删除五星饰品实例
+        for accessory_instance in five_star_accessories:
+            self.inventory_repo.delete_accessory_instance(accessory_instance.accessory_instance_id)
+
+        # 更新用户金币
+        user.coins += total_value
+        self.user_repo.update(user)
+
+        return {"success": True, "message": f"💰 成功卖出 {len(five_star_accessories)} 个五星饰品，获得 {total_value} 金币"}
